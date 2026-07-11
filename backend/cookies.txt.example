@@ -1,0 +1,10 @@
+# Netscape HTTP Cookie File
+# Bu — namuna (bo'sh) fayl. Haqiqiy cookies.txt YouTube'da tizimga kirgan
+# holda brauzer kengaytmasi orqali eksport qilinadi (masalan "Get cookies.txt
+# LOCALLY" kengaytmasi), so'ng `backend/cookies.txt` nomi bilan saqlanadi
+# (bu fayl .gitignore'da — hech qachon git'ga qo'shilmaydi, chunki unda
+# sessiya cookie'lari, ya'ni maxfiy ma'lumot bor).
+#
+# Nega kerak: bulutli server (masalan Oracle Cloud) IP manzillaridan kelgan
+# so'rovlarni YouTube ko'pincha "Sign in to confirm you're not a bot" deb
+# bloklaydi. Haqiqiy hisobingiz cookie'lari bilan bu chetlab o'tiladi.

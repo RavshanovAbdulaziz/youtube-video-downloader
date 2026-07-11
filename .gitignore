@@ -9,3 +9,7 @@ env/
 node_modules/
 .DS_Store
 .env
+*.key
+*.pem
+*.pub
+backend/cookies.txt

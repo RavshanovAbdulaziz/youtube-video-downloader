@@ -3,8 +3,11 @@ services:
     build: .
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     env_file: .env
+    environment:
+      - YTDLP_COOKIES_FILE=/app/backend/cookies.txt
     volumes:
       - downloads:/app/backend/downloads
+      - ./backend/cookies.txt:/app/backend/cookies.txt
     ports:
       - "80:8000"
     restart: unless-stopped
@@ -13,8 +16,11 @@ services:
     build: .
     command: python bot.py
     env_file: .env
+    environment:
+      - YTDLP_COOKIES_FILE=/app/backend/cookies.txt
     volumes:
       - downloads:/app/backend/downloads
+      - ./backend/cookies.txt:/app/backend/cookies.txt
     restart: unless-stopped
 
 volumes:

@@ -10,6 +10,19 @@ _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
+# Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni
+# YouTube ko'pincha "sign in to confirm you're not a bot" deb bloklaydi.
+# Brauzerdan eksport qilingan cookies.txt fayli (Netscape format) ko'rsatilsa,
+# bu muammoni chetlab o'tadi.
+COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+
+
+def _ydl_base_opts() -> dict:
+    opts = {}
+    if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    return opts
+
 # job_id -> progress/state dict, shared across threads
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -34,7 +47,7 @@ def _lang_label(code: str, is_original: bool) -> str:
 
 
 def get_info(url: str) -> dict:
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_ydl_base_opts()}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -153,6 +166,7 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [_progress_hook(job_id)],
+        **_ydl_base_opts(),
     }
     if not audio_only:
         ydl_opts["merge_output_format"] = "mp4"

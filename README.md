@@ -137,6 +137,22 @@ etiladi.
 (HTTPS emas). Keyinchalik domen olsangiz, `Caddy` kabi reverse-proxy qo'shib
 avtomatik Let's Encrypt sertifikat olish oson qo'shimcha qadam bo'ladi.
 
+### YouTube "Sign in to confirm you're not a bot" xatoligi
+
+Bulutli server (Oracle Cloud va h.k.) IP manzillaridan kelgan so'rovlarni
+YouTube ko'pincha bot deb hisoblab bloklaydi. Buni hal qilish uchun
+brauzeringizda YouTube'ga kirgan holda cookie'laringizni eksport qiling:
+
+1. Chrome/Firefox'ga "Get cookies.txt LOCALLY" kabi kengaytma o'rnating.
+2. youtube.com'da tizimga kirgan holda cookie'larni `cookies.txt` (Netscape
+   format) sifatida eksport qiling.
+3. Faylni serverga yuklang: `scp cookies.txt ubuntu@<vm-ip>:~/youtube-video-downloader/backend/cookies.txt`
+4. Serverda qayta ishga tushiring: `docker compose restart`
+
+`backend/cookies.txt` — `.gitignore`'da, git'ga hech qachon qo'shilmaydi
+(unda sizning sessiya ma'lumotlaringiz bor). Namuna uchun
+`backend/cookies.txt.example`'ga qarang.
+
 ## Loyiha fayllari
 
 ```
