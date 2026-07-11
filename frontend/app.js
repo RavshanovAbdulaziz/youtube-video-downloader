@@ -28,8 +28,72 @@ const separateProgressText = document.getElementById("separate-progress-text");
 const separateLinks = document.getElementById("separate-links");
 const speechFileLink = document.getElementById("speech-file-link");
 const backgroundFileLink = document.getElementById("background-file-link");
+const computeModal = document.getElementById("compute-modal");
+const computeYesBtn = document.getElementById("compute-yes-btn");
+const computeNoBtn = document.getElementById("compute-no-btn");
+const computeStatus = document.getElementById("compute-status");
 
 let currentInfo = null;
+
+const LOCAL_BASE = "http://127.0.0.1:8000";
+const COMPUTE_PREF_KEY = "useLocalCompute";
+
+function getComputePreference() {
+  return localStorage.getItem(COMPUTE_PREF_KEY); // "yes" | "no" | null
+}
+
+function setComputePreference(value) {
+  localStorage.setItem(COMPUTE_PREF_KEY, value);
+  updateComputeStatusText();
+}
+
+function updateComputeStatusText() {
+  const pref = getComputePreference();
+  if (pref === "yes") {
+    computeStatus.textContent = "Kompyuter kuchidan foydalanish: yoqilgan (o'zgartirish uchun bosing)";
+  } else {
+    computeStatus.textContent = "Kompyuter kuchidan foydalanish: o'chirilgan (o'zgartirish uchun bosing)";
+  }
+}
+
+function openComputeModal() {
+  computeModal.classList.remove("hidden");
+}
+
+function closeComputeModal() {
+  computeModal.classList.add("hidden");
+}
+
+computeYesBtn.addEventListener("click", () => {
+  setComputePreference("yes");
+  closeComputeModal();
+});
+
+computeNoBtn.addEventListener("click", () => {
+  setComputePreference("no");
+  closeComputeModal();
+});
+
+computeStatus.addEventListener("click", openComputeModal);
+
+updateComputeStatusText();
+if (getComputePreference() === null) {
+  openComputeModal();
+}
+
+// Ish (download/separate) boshlanishidan oldin chaqiriladi: agar foydalanuvchi
+// ruxsat bergan bo'lsa va mahalliy dastur (start.bat) ishlab turgan bo'lsa,
+// shu kompyuter orqali bajaramiz; aks holda server ("") ishlatiladi.
+async function apiBase() {
+  if (getComputePreference() !== "yes") return "";
+  try {
+    const res = await fetch(`${LOCAL_BASE}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (res.ok) return LOCAL_BASE;
+  } catch (e) {
+    // mahalliy dastur ishlamayapti yoki brauzer ruxsat bermadi — serverga o'tamiz
+  }
+  return "";
+}
 
 function showError(msg) {
   errorMsgText.textContent = msg;
@@ -141,15 +205,16 @@ async function startDownload(body) {
   progressText.textContent = "Boshlanmoqda...";
   setButtonsDisabled(true);
 
+  const base = await apiBase();
   try {
-    const res = await fetch("/api/download", {
+    const res = await fetch(`${base}/api/download`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
-    pollProgress(data.job_id);
+    pollProgress(data.job_id, base);
   } catch (e) {
     showError(e.message);
     setButtonsDisabled(false);
@@ -188,8 +253,9 @@ separateBtn.addEventListener("click", async () => {
   separateProgressText.textContent = "Boshlanmoqda...";
   separateBtn.disabled = true;
 
+  const base = await apiBase();
   try {
-    const res = await fetch("/api/separate", {
+    const res = await fetch(`${base}/api/separate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -201,16 +267,16 @@ separateBtn.addEventListener("click", async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
-    pollSeparateProgress(data.job_id);
+    pollSeparateProgress(data.job_id, base);
   } catch (e) {
     showError(e.message);
     separateBtn.disabled = false;
   }
 });
 
-function pollSeparateProgress(jobId) {
+function pollSeparateProgress(jobId, base) {
   const interval = setInterval(async () => {
-    const res = await fetch(`/api/separate/progress/${jobId}`);
+    const res = await fetch(`${base}/api/separate/progress/${jobId}`);
     const data = await res.json();
     const pct = data.percent != null ? data.percent : 0;
 
@@ -224,8 +290,8 @@ function pollSeparateProgress(jobId) {
       clearInterval(interval);
       setProgress(separateProgressFill, 100, false);
       separateProgressText.textContent = "Tayyor!";
-      speechFileLink.href = `/api/separate/file/${jobId}/speech`;
-      backgroundFileLink.href = `/api/separate/file/${jobId}/background`;
+      speechFileLink.href = `${base}/api/separate/file/${jobId}/speech`;
+      backgroundFileLink.href = `${base}/api/separate/file/${jobId}/background`;
       separateLinks.classList.remove("hidden");
       separateBtn.disabled = false;
     } else if (data.status === "error") {
@@ -237,9 +303,9 @@ function pollSeparateProgress(jobId) {
   }, 1200);
 }
 
-function pollProgress(jobId) {
+function pollProgress(jobId, base) {
   const interval = setInterval(async () => {
-    const res = await fetch(`/api/progress/${jobId}`);
+    const res = await fetch(`${base}/api/progress/${jobId}`);
     const data = await res.json();
 
     if (data.status === "downloading") {
@@ -254,7 +320,7 @@ function pollProgress(jobId) {
       clearInterval(interval);
       setProgress(progressFill, 100, false);
       progressText.textContent = "Tayyor!";
-      fileLink.href = `/api/file/${jobId}`;
+      fileLink.href = `${base}/api/file/${jobId}`;
       fileLink.classList.remove("hidden");
       setButtonsDisabled(false);
     } else if (data.status === "error") {

@@ -1,0 +1,9 @@
+# "Ovozni ajratish" (Demucs / UVR) uchun qo'shimcha kutubxonalar — faqat
+# Linux/Docker serverga joylashtirishda ishlatiladi (Dockerfile'ga qarang).
+# torch alohida, CPU-only index'dan o'rnatiladi (Dockerfile'da) — bu yerga
+# kiritilmagan, chunki aarch64'da standart "pip install torch" CUDA
+# versiyasini tortib olishi mumkin.
+demucs
+audio-separator
+lameenc
+numpy<2.5

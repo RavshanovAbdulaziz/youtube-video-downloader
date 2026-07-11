@@ -311,3 +311,59 @@ button.secondary:hover:not(:disabled) {
 #separate-links .result-link {
   margin-top: 0;
 }
+
+.compute-status {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin: -14px 0 22px 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  max-width: 440px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.modal h3 {
+  margin: 0 0 12px 0;
+  color: #f1f5f9;
+}
+
+.modal p {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 18px 0;
+}
+
+.modal code {
+  background: var(--card-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.modal-actions button {
+  flex: 1;
+}

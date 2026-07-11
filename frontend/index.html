@@ -7,11 +7,31 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div id="compute-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Kompyuteringiz kuchidan foydalanamizmi?</h3>
+      <p>
+        Yuklash va ovozni ajratish jarayonlarini <b>tezroq</b> bajarish uchun
+        ushbu kompyuterning CPU/GPU kuchidan foydalanishimizga ruxsat berasizmi?
+        Buning uchun kompyuteringizda mahalliy dastur (<code>start.bat</code>)
+        ishga tushgan bo'lishi kerak. Agar brauzeringiz alohida "local tarmoqqa
+        ruxsat berish" so'rasa — uni ham tasdiqlang. Ruxsat bermasangiz yoki
+        mahalliy dastur topilmasa, hammasi server orqali bajariladi.
+      </p>
+      <div class="modal-actions">
+        <button id="compute-yes-btn">Ha, ruxsat beraman</button>
+        <button id="compute-no-btn" class="secondary">Yo'q, server orqali</button>
+      </div>
+    </div>
+  </div>
+
   <main class="container">
     <h1>
       <svg class="icon icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33Z"/><path d="m9.75 15.02 5.75-3.27-5.75-3.27v6.54Z"/></svg>
       YouTube Video Downloader
     </h1>
+
+    <p id="compute-status" class="compute-status"></p>
 
     <div class="input-row">
       <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>

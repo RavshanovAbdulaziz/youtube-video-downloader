@@ -1,7 +1,10 @@
 fastapi
 uvicorn[standard]
 yt-dlp
+aiogram
 
 # "Ovozni ajratish" (AI: Demucs / UVR) funksiyasi ixtiyoriy va bu faylga
-# kiritilmagan — uni o'rnatish uchun loyiha papkasidagi install_ai.bat
-# (yoki setup.bat) faylini ishga tushiring.
+# kiritilmagan — uni Windows'da o'rnatish uchun loyiha papkasidagi
+# install_ai.bat (yoki setup.bat) faylini ishga tushiring. Serverga
+# (Docker/Linux) joylashtirishda esa requirements-ai.txt ishlatiladi —
+# Dockerfile'ga qarang.

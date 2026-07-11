@@ -5,11 +5,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.middleware.cors import CORSMiddleware
 
 import downloader
 import separator
 
 app = FastAPI(title="YouTube Downloader")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.environ.get("PUBLIC_ORIGIN", "*")],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
@@ -31,6 +39,11 @@ class SeparateRequest(BaseModel):
     audio_format_id: str
     title: str | None = None
     engine: str = "demucs"
+
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}
 
 
 @app.post("/api/info")
