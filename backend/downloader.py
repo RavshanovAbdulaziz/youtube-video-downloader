@@ -18,7 +18,10 @@ COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
 
 
 def _ydl_base_opts() -> dict:
-    opts = {}
+    # YouTube'ning "n" signature challenge'ini yechish uchun yt-dlp'ga JS
+    # runtime kerak (standart bo'yicha faqat "deno" yoqilgan — bizda esa
+    # Node.js o'rnatilgan, shuning uchun buni aniq ko'rsatamiz).
+    opts = {"js_runtimes": {"node": {}}}
     if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
     return opts

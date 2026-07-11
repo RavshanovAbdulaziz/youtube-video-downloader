@@ -12,4 +12,6 @@ node_modules/
 *.key
 *.pem
 *.pub
+cookies.txt
+*_cookies.txt
 backend/cookies.txt
