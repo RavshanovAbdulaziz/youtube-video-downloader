@@ -1,5 +1,8 @@
+import contextlib
 import os
 import re
+import shutil
+import tempfile
 import threading
 import uuid
 
@@ -12,19 +15,39 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 # Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni
 # YouTube ko'pincha "sign in to confirm you're not a bot" deb bloklaydi.
-# Brauzerdan eksport qilingan cookies.txt fayli (Netscape format) ko'rsatilsa,
-# bu muammoni chetlab o'tadi.
+# Asosiy yechim: PO token provider (bgutil) — hisobga bog'liq bo'lmagan,
+# cookie kabi "bekor qilinish"ga moyil bo'lmagan usul
+# (https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). cookies.txt
+# (agar berilgan bo'lsa) qo'shimcha, lekin shart emas.
 COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+POT_BASE_URL = os.environ.get("YTDLP_POT_BASE_URL", "")
 
 
-def _ydl_base_opts() -> dict:
-    # YouTube'ning "n" signature challenge'ini yechish uchun yt-dlp'ga JS
-    # runtime kerak (standart bo'yicha faqat "deno" yoqilgan — bizda esa
-    # Node.js o'rnatilgan, shuning uchun buni aniq ko'rsatamiz).
-    opts = {"js_runtimes": {"node": {}}}
+@contextlib.contextmanager
+def ydl_opts_ctx(extra: dict):
+    """yt-dlp uchun umumiy sozlamalar. Har bir chaqiruv cookies faylining
+    o'z vaqtinchalik nusxasini oladi — chunki yt-dlp foydalanilgan
+    cookie'larni faylga qayta yozadi, va bir nechta jarayon (api + bot,
+    yoki bir nechta parallel so'rov) bitta faylni bir vaqtda yozsa, u
+    asta-sekin buzilib boradi. Asosiy fayl hech qachon o'zgarmaydi.
+    """
+    opts = {"js_runtimes": {"node": {}}, **extra}
+    if POT_BASE_URL:
+        opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [POT_BASE_URL]}}
+    tmp_cookie = None
     if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
-        opts["cookiefile"] = COOKIES_FILE
-    return opts
+        fd, tmp_cookie = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
+        shutil.copyfile(COOKIES_FILE, tmp_cookie)
+        opts["cookiefile"] = tmp_cookie
+    try:
+        yield opts
+    finally:
+        if tmp_cookie:
+            try:
+                os.remove(tmp_cookie)
+            except OSError:
+                pass
 
 # job_id -> progress/state dict, shared across threads
 jobs: dict[str, dict] = {}
@@ -50,9 +73,9 @@ def _lang_label(code: str, is_original: bool) -> str:
 
 
 def get_info(url: str) -> dict:
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_ydl_base_opts()}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
     formats = info.get("formats", [])
 
@@ -163,25 +186,24 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
         fmt = video_format_id
 
     outtmpl = os.path.join(DOWNLOADS_DIR, f"{job_id}.%(ext)s")
-    ydl_opts = {
+    base_opts = {
         "format": fmt,
         "outtmpl": outtmpl,
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [_progress_hook(job_id)],
-        **_ydl_base_opts(),
     }
     if not audio_only:
-        ydl_opts["merge_output_format"] = "mp4"
+        base_opts["merge_output_format"] = "mp4"
     if audio_only:
-        ydl_opts["postprocessors"] = [{
+        base_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
         }]
 
     def run():
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             raw_path = _find_output_file(job_id)
             final_path = raw_path

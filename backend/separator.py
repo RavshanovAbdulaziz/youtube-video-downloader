@@ -8,7 +8,7 @@ import uuid
 
 import yt_dlp
 
-from downloader import DOWNLOADS_DIR, _sanitize_filename, _unique_path, _ydl_base_opts
+from downloader import DOWNLOADS_DIR, _sanitize_filename, _unique_path, ydl_opts_ctx
 
 SEPARATE_TMP_DIR = os.path.join(os.path.dirname(__file__), "downloads", "_separate_tmp")
 os.makedirs(SEPARATE_TMP_DIR, exist_ok=True)
@@ -130,15 +130,14 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
         work_dir = os.path.join(SEPARATE_TMP_DIR, job_id)
         os.makedirs(work_dir, exist_ok=True)
         try:
-            ydl_opts = {
+            base_opts = {
                 "format": audio_format_id,
                 "outtmpl": os.path.join(work_dir, "source.%(ext)s"),
                 "quiet": True,
                 "no_warnings": True,
                 "progress_hooks": [_download_progress_hook(job_id)],
-                **_ydl_base_opts(),
             }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
 
             source_file = next(

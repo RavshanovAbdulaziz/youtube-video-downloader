@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 yt-dlp[default]
+bgutil-ytdlp-pot-provider
 aiogram
 
 # "Ovozni ajratish" (AI: Demucs / UVR) funksiyasi ixtiyoriy va bu faylga
