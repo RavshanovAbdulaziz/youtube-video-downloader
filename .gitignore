@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+_numba_cache/
+backend/downloads/
+.venv/
+venv/
+env/
+*.log
+node_modules/
+.DS_Store

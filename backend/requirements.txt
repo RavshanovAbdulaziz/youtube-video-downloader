@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+yt-dlp
+
+# "Ovozni ajratish" (AI: Demucs / UVR) funksiyasi ixtiyoriy va bu faylga
+# kiritilmagan — uni o'rnatish uchun loyiha papkasidagi install_ai.bat
+# (yoki setup.bat) faylini ishga tushiring.
