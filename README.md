@@ -87,11 +87,20 @@ Telegram bot orqali ham ishlatilishi mumkin.
   o'zgartirishingiz mumkin. **Eslatma**: zamonaviy Chrome'da brauzer
   o'zining alohida "local tarmoqqa ruxsat berish" oynasini ham ko'rsatishi
   mumkin — shuni ham tasdiqlash kerak bo'ladi.
-- **Telegram bot**: har doim serverning o'z kuchidan foydalanadi (foydalanuvchi
-  kompyuteriga hech qachon ulanmaydi). YouTube havolasini yuboring — bot
-  sifat/audio/ajratish tanlovlarini tugmalar bilan taklif qiladi. Telegram'ning
-  oddiy Bot API orqali fayl yuborish chegarasi ~50MB — undan katta fayllar
-  uchun bot Web UI havolasini taklif qiladi.
+- **Telegram bot**: YouTube havolasini yuboring — bot sifat/audio/ajratish
+  tanlovlarini tugmalar bilan taklif qiladi. Telegram'ning oddiy Bot API
+  orqali fayl yuborish chegarasi ~50MB — undan katta fayllar uchun bot Web
+  UI havolasini taklif qiladi.
+
+  **Muhim eslatma:** dastlab bot doimo bulut serverida ishlashi rejalashtirilgan
+  edi, lekin amalda YouTube bulut serverlarning (Oracle, AWS, GCP va h.k.) IP
+  diapazonlarini doimiy ravishda bloklaydi ("Sign in to confirm you're not a
+  bot" xatosi — cookie, PO token, JS runtime kabi hech qanday workaround bilan
+  ham barqaror hal bo'lmadi). Shuning uchun bot hozircha **shaxsiy
+  kompyuterda** (rezidensial IP orqali, bloklanmaydi) ishlaydi:
+  `start_bot.bat` faylini ishga tushiring (`backend/.env` ichida `BOT_TOKEN=...`
+  qatori bo'lishi kerak — bu fayl git'ga qo'shilmaydi). Bot faqat shu
+  kompyuter yoqiq va skript ishlab turgan vaqtda javob beradi.
 
 ### Oracle Cloud Always Free'ga joylashtirish
 
@@ -139,9 +148,21 @@ avtomatik Let's Encrypt sertifikat olish oson qo'shimcha qadam bo'ladi.
 
 ### YouTube "Sign in to confirm you're not a bot" xatoligi
 
-Bulutli server (Oracle Cloud va h.k.) IP manzillaridan kelgan so'rovlarni
-YouTube ko'pincha bot deb hisoblab bloklaydi. Buni hal qilish uchun
-brauzeringizda YouTube'ga kirgan holda cookie'laringizni eksport qiling:
+Bulutli server (Oracle Cloud, AWS, GCP va h.k.) IP manzillaridan kelgan
+so'rovlarni YouTube ko'pincha bot deb hisoblab bloklaydi. Loyihada bir nechta
+workaround qo'shilgan (cookies.txt, Node.js JS runtime, PO token provider —
+pastga qarang), lekin **amaliyotda bu workaround'larning hech biri Oracle
+Cloud'ning bloklangan IP diapazoni uchun doimiy yechim bo'lmadi** — bir necha
+soatlik/kunlik testdan so'ng ham xato saqlanib qoldi. Bu YouTube tomonidan
+butun IP diapazonining doimiy bloklanganini ko'rsatadi, vaqtinchalik cheklov
+emas.
+
+**Amaldagi yechim:** Telegram bot va (agar ruxsat berilsa) Web UI'ning
+yuklab olish/ajratish qismi **shaxsiy kompyuterda** (rezidensial IP orqali)
+ishlaydi — bunda bu muammo umuman yo'q. Yuqoridagi "Telegram bot" bo'limiga
+qarang.
+
+Agar baribir serverda ham cookie orqali urinib ko'rmoqchi bo'lsangiz:
 
 1. Chrome/Firefox'ga "Get cookies.txt LOCALLY" kabi kengaytma o'rnating.
 2. youtube.com'da tizimga kirgan holda cookie'larni `cookies.txt` (Netscape
@@ -158,6 +179,7 @@ brauzeringizda YouTube'ga kirgan holda cookie'laringizni eksport qiling:
 ```
 you tube video downloander/
 ├── start.bat            # Serverni ishga tushirish (bosish bilan)
+├── start_bot.bat        # Telegram botni shu kompyuterda ishga tushirish
 ├── stop.bat             # Serverni to'xtatish (bosish bilan)
 ├── stop.ps1             # stop.bat ichida ishlatiladigan PowerShell skripti
 ├── setup.bat            # Birinchi marta o'rnatish (bosish bilan)
