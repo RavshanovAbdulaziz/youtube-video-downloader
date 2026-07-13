@@ -90,7 +90,19 @@ Telegram bot orqali ham ishlatilishi mumkin.
 - **Telegram bot**: YouTube havolasini yuboring — bot sifat/audio/ajratish
   tanlovlarini tugmalar bilan taklif qiladi. Telegram'ning oddiy Bot API
   orqali fayl yuborish chegarasi ~50MB — undan katta fayllar uchun bot Web
-  UI havolasini taklif qiladi.
+  UI havolasini taklif qiladi (agar quyidagi ixtiyoriy lokal Bot API server
+  sozlanmagan bo'lsa).
+
+  **Ixtiyoriy: 2GB'gacha fayl yuborish.** Standart 50MB chegarani 2000MB'gacha
+  ko'tarish uchun Telegram'ning rasmiy `telegram-bot-api` serverini `--local`
+  rejimda lokal ishga tushirish mumkin (masalan WSL/Linux orqali, manba
+  kodidan qurilib — https://github.com/tdlib/telegram-bot-api). Kerak
+  bo'ladigan narsa: my.telegram.org/apps'dan `api_id`/`api_hash`, va
+  serverni `--http-ip-address=127.0.0.1` bilan **faqat shu kompyuterga**
+  bog'lab ishga tushirish (tashqi tarmoqqa ochiq qoldirmaslik kerak — u
+  autentifikatsiyasiz, real bot tokenlarini ushlab turadi). So'ng
+  `backend/.env`ga `LOCAL_API_BASE_URL=http://127.0.0.1:8081` qatorini
+  qo'shing — bot avtomatik shu serverdan foydalanadi.
 
   **Muhim eslatma:** dastlab bot doimo bulut serverida ishlashi rejalashtirilgan
   edi, lekin amalda YouTube bulut serverlarning (Oracle, AWS, GCP va h.k.) IP

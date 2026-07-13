@@ -4,6 +4,8 @@ import os
 import uuid
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -20,8 +22,12 @@ import separator
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-MAX_TELEGRAM_MB = int(os.environ.get("MAX_TELEGRAM_MB", "49"))
 WEB_UI_URL = os.environ.get("WEB_UI_URL", "")
+LOCAL_API_BASE_URL = os.environ.get("LOCAL_API_BASE_URL", "")
+# 50MB — standart Telegram Bot API cheklovi. Lokal Bot API server (--local
+# rejimda, LOCAL_API_BASE_URL orqali) ishlatilsa, cheklov 2000MB'gacha ko'tariladi.
+_DEFAULT_MAX_MB = "1900" if LOCAL_API_BASE_URL else "49"
+MAX_TELEGRAM_MB = int(os.environ.get("MAX_TELEGRAM_MB", _DEFAULT_MAX_MB))
 
 router = Router()
 
@@ -208,7 +214,10 @@ async def on_separate(callback: CallbackQuery) -> None:
 
 
 async def main() -> None:
-    bot = Bot(BOT_TOKEN)
+    session = None
+    if LOCAL_API_BASE_URL:
+        session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_API_BASE_URL, is_local=True))
+    bot = Bot(BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
     await dp.start_polling(bot)
