@@ -72,6 +72,27 @@ def _lang_label(code: str, is_original: bool) -> str:
     return f"{name} (original)" if is_original else f"{name} (dubbed)"
 
 
+def _video_codec_rank(vcodec: str | None) -> int:
+    # H.264 (avc1) mp4 konteynerida deyarli har qanday player/muharrirda
+    # ochiladi; VP9/AV1 ko'proq joyda (ayniqsa eski video muharrirlarda)
+    # muammo qiladi — shuning uchun bir xil balandlikda avc1'ga ustunlik
+    # beramiz, u yo'q bo'lsagina VP9/AV1'ga tushamiz.
+    vcodec = vcodec or ""
+    if vcodec.startswith("avc1") or vcodec.startswith("h264"):
+        return 0
+    if vcodec.startswith("vp9") or vcodec.startswith("vp09"):
+        return 1
+    if vcodec.startswith("av01"):
+        return 2
+    return 3
+
+
+def _audio_codec_rank(acodec: str | None) -> int:
+    # AAC (mp4a) mp4 konteynerida Opus'dan ancha kengroq qo'llab-quvvatlanadi.
+    acodec = acodec or ""
+    return 0 if acodec.startswith("mp4a") else 1
+
+
 def get_info(url: str) -> dict:
     with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -89,11 +110,14 @@ def get_info(url: str) -> dict:
         height = f.get("height") or 0
         if height == 0:
             continue
-        fps = f.get("fps") or 0
-        key = height
-        current = best_by_height.get(key)
-        if current is None or (f.get("tbr") or 0) > (current.get("tbr") or 0):
-            best_by_height[key] = f
+        current = best_by_height.get(height)
+        if current is None:
+            best_by_height[height] = f
+            continue
+        f_rank = _video_codec_rank(f.get("vcodec"))
+        cur_rank = _video_codec_rank(current.get("vcodec"))
+        if f_rank < cur_rank or (f_rank == cur_rank and (f.get("tbr") or 0) > (current.get("tbr") or 0)):
+            best_by_height[height] = f
 
     resolutions = []
     for height, f in sorted(best_by_height.items(), key=lambda kv: kv[0], reverse=True):
@@ -103,6 +127,7 @@ def get_info(url: str) -> dict:
             "format_id": f["format_id"],
             "label": label,
             "height": height,
+            "width": f.get("width"),
             "fps": fps,
             "ext": f.get("ext"),
             "has_audio": f.get("acodec") != "none",
@@ -120,7 +145,12 @@ def get_info(url: str) -> dict:
         pref = f.get("language_preference") or 0
         is_original = single_track or (max_pref > 0 and pref == max_pref)
         current = seen_langs.get(code)
-        if current is None or (f.get("abr") or 0) > (current.get("abr") or 0):
+        is_better = current is None
+        if current is not None:
+            f_rank = _audio_codec_rank(f.get("acodec"))
+            cur_rank = _audio_codec_rank(current.get("_acodec"))
+            is_better = f_rank < cur_rank or (f_rank == cur_rank and (f.get("abr") or 0) > (current.get("abr") or 0))
+        if is_better:
             seen_langs[code] = {
                 "format_id": f["format_id"],
                 "lang_code": code,
@@ -128,9 +158,13 @@ def get_info(url: str) -> dict:
                 "abr": f.get("abr"),
                 "ext": f.get("ext"),
                 "is_original": is_original,
+                "_acodec": f.get("acodec"),
             }
 
-    audio_tracks = sorted(seen_langs.values(), key=lambda a: (not a["is_original"], a["label"]))
+    audio_tracks = [
+        {k: v for k, v in track.items() if k != "_acodec"}
+        for track in sorted(seen_langs.values(), key=lambda a: (not a["is_original"], a["label"]))
+    ]
 
     return {
         "title": info.get("title"),
@@ -195,6 +229,12 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
     }
     if not audio_only:
         base_opts["merge_output_format"] = "mp4"
+        # ffmpeg standart bo'yicha MP4 metadatasini (moov atom) fayl
+        # oxiriga yozadi — Telegram va boshqa ko'p platformalar preview/
+        # thumbnail yasash uchun faylning boshini o'qiydi va buni topa
+        # olmay, videoni noto'g'ri (masalan 1x1) ko'rsatadi. "+faststart"
+        # metadatani boshiga ko'chiradi (remux, sifatga ta'sir qilmaydi).
+        base_opts["postprocessor_args"] = {"Merger": ["-movflags", "+faststart"]}
     if audio_only:
         base_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",

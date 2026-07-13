@@ -1,25 +1,34 @@
 import asyncio
 import logging
 import os
-import uuid
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    CallbackQuery,
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 import downloader
 import separator
+from bot_ui import keyboards as kb
+from bot_ui import texts
+from bot_ui.callbacks import (
+    DownloadAudioCB,
+    DownloadVideoCB,
+    MenuBackCB,
+    MenuSeparateCB,
+    MenuVideoCB,
+    PickLanguageCB,
+    SeparateCB,
+    SetLanguageCB,
+)
+from bot_ui.state import ContextStore, VideoContext
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("bot")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEB_UI_URL = os.environ.get("WEB_UI_URL", "")
@@ -30,194 +39,339 @@ _DEFAULT_MAX_MB = "1900" if LOCAL_API_BASE_URL else "49"
 MAX_TELEGRAM_MB = int(os.environ.get("MAX_TELEGRAM_MB", _DEFAULT_MAX_MB))
 
 router = Router()
-
-# token -> {"url", "title", "audio_format_id", "resolutions": [...]}
-contexts: dict[str, dict] = {}
+store = ContextStore()
 
 
-def _original_audio_format_id(audio_tracks: list[dict]) -> str | None:
-    return audio_tracks[0]["format_id"] if audio_tracks else None
+# ---------------------------------------------------------------------------
+# Kartochka (thumbnail + caption) bilan ishlash
+# ---------------------------------------------------------------------------
+
+async def _send_info_card(message: Message, token: str, ctx: VideoContext) -> None:
+    caption = texts.card_header(ctx)
+    keyboard = kb.main_menu(ctx, token)
+    if ctx.thumbnail:
+        try:
+            await message.answer_photo(ctx.thumbnail, caption=caption, reply_markup=keyboard)
+            return
+        except TelegramBadRequest:
+            pass  # rasm topilmadi/yuklanmadi — oddiy matn xabariga tushamiz
+    await message.answer(caption, reply_markup=keyboard)
 
 
-def _build_keyboard(token: str, resolutions: list[dict]) -> InlineKeyboardMarkup:
-    rows = []
-    for r in resolutions[:6]:
-        rows.append([InlineKeyboardButton(text=f"🎬 {r['label']}", callback_data=f"dl:{token}:{r['format_id']}")])
-    rows.append([InlineKeyboardButton(text="🎵 Faqat audio", callback_data=f"da:{token}")])
-    rows.append([
-        InlineKeyboardButton(text="🎤 Ajratish (Demucs)", callback_data=f"sd:{token}"),
-        InlineKeyboardButton(text="🎤 Ajratish (UVR)", callback_data=f"su:{token}"),
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@router.message(CommandStart())
-async def on_start(message: Message) -> None:
-    await message.answer(
-        "Salom! YouTube havolasini yuboring — video/audio yuklab olish yoki "
-        "ovozni ajratish (AI) imkoniyatlarini taklif qilaman."
-    )
-
-
-@router.message(F.text.contains("http"))
-async def on_url(message: Message) -> None:
-    url = message.text.strip()
-    status = await message.answer("Ma'lumot olinmoqda...")
+async def _edit_card(message: Message, caption: str, keyboard=None) -> None:
+    markup = keyboard if keyboard is not None else kb.EMPTY
     try:
-        info = await asyncio.to_thread(downloader.get_info, url)
-    except Exception as e:
-        await status.edit_text(f"Xatolik: {e}")
-        return
-
-    token = uuid.uuid4().hex[:8]
-    contexts[token] = {
-        "url": url,
-        "title": info.get("title"),
-        "audio_format_id": _original_audio_format_id(info.get("audio_tracks", [])),
-        "resolutions": info.get("resolutions", []),
-    }
-
-    await status.edit_text(
-        f"🎬 {info.get('title') or url}\n\nNima qilaylik?",
-        reply_markup=_build_keyboard(token, info.get("resolutions", [])),
-    )
-
-
-async def _safe_edit(message: Message, text: str) -> None:
-    try:
-        await message.edit_text(text)
+        if message.photo:
+            await message.edit_caption(caption=caption, reply_markup=markup)
+        else:
+            await message.edit_text(caption, reply_markup=markup)
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e):
             raise
 
 
-async def _send_result_file(message: Message, path: str, caption: str = "") -> None:
+def _ctx_or_none(token: str) -> VideoContext | None:
+    return store.get(token)
+
+
+# ---------------------------------------------------------------------------
+# Buyruqlar
+# ---------------------------------------------------------------------------
+
+@router.message(CommandStart())
+async def on_start(message: Message) -> None:
+    await message.answer(texts.START_TEXT)
+
+
+@router.message(Command("help"))
+async def on_help(message: Message) -> None:
+    await message.answer(texts.help_text(MAX_TELEGRAM_MB))
+
+
+@router.message(F.text.contains("http"))
+async def on_url(message: Message) -> None:
+    url = message.text.strip()
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    status = await message.answer("⏳ Ma'lumot olinmoqda...")
+    try:
+        info = await asyncio.to_thread(downloader.get_info, url)
+    except Exception as e:
+        logger.warning("get_info failed for %s: %s", url, e)
+        await status.edit_text(f"❌ Xatolik: {e}")
+        return
+
+    token = store.create(
+        url=url,
+        title=info.get("title"),
+        duration=info.get("duration"),
+        thumbnail=info.get("thumbnail"),
+        resolutions=info.get("resolutions", []),
+        audio_tracks=info.get("audio_tracks", []),
+    )
+    ctx = store.get(token)
+
+    await status.delete()
+    await _send_info_card(message, token, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Menyu navigatsiyasi
+# ---------------------------------------------------------------------------
+
+@router.callback_query(MenuVideoCB.filter())
+async def on_menu_video(callback: CallbackQuery, callback_data: MenuVideoCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    await _edit_card(
+        callback.message,
+        texts.resolution_submenu_caption(ctx),
+        kb.resolutions_menu(callback_data.token, ctx.resolutions),
+    )
+
+
+@router.callback_query(MenuSeparateCB.filter())
+async def on_menu_separate(callback: CallbackQuery, callback_data: MenuSeparateCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    await _edit_card(
+        callback.message,
+        texts.separate_submenu_caption(ctx),
+        kb.separate_menu(callback_data.token),
+    )
+
+
+@router.callback_query(PickLanguageCB.filter())
+async def on_pick_language(callback: CallbackQuery, callback_data: PickLanguageCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    await _edit_card(
+        callback.message,
+        texts.language_submenu_caption(ctx),
+        kb.language_menu(callback_data.token, ctx.audio_tracks),
+    )
+
+
+@router.callback_query(SetLanguageCB.filter())
+async def on_set_language(callback: CallbackQuery, callback_data: SetLanguageCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    if 0 <= callback_data.index < len(ctx.audio_tracks):
+        ctx.audio_index = callback_data.index
+    await callback.answer("✅ Til o'zgartirildi")
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+
+
+@router.callback_query(MenuBackCB.filter())
+async def on_menu_back(callback: CallbackQuery, callback_data: MenuBackCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+
+
+# ---------------------------------------------------------------------------
+# Progress kuzatuvchilar
+# ---------------------------------------------------------------------------
+
+async def _send_result_file(
+    message: Message,
+    path: str,
+    caption: str = "",
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    duration: float | None = None,
+) -> None:
     size_mb = os.path.getsize(path) / 1024 / 1024
     if size_mb > MAX_TELEGRAM_MB:
-        note = f"Fayl juda katta ({size_mb:.0f} MB), Telegram orqali yuborib bo'lmaydi."
-        if WEB_UI_URL:
-            note += f"\nWeb UI orqali qayta urinib ko'ring: {WEB_UI_URL}"
-        await message.answer(note)
+        await message.answer(
+            texts.too_large_text(size_mb, WEB_UI_URL),
+            reply_markup=kb.web_ui_link(WEB_UI_URL) if WEB_UI_URL else None,
+        )
         return
 
     ext = os.path.splitext(path)[1].lower()
     file = FSInputFile(path)
+    action = {".mp4": ChatAction.UPLOAD_VIDEO, ".mp3": ChatAction.UPLOAD_VOICE}.get(ext, ChatAction.UPLOAD_DOCUMENT)
+    await message.bot.send_chat_action(message.chat.id, action)
+
     if ext == ".mp4":
-        await message.answer_video(file, caption=caption)
+        await message.answer_video(
+            file,
+            caption=caption,
+            width=width,
+            height=height,
+            duration=int(duration) if duration else None,
+            supports_streaming=True,
+        )
     elif ext == ".mp3":
         await message.answer_audio(file, caption=caption)
     else:
         await message.answer_document(file, caption=caption)
 
 
-async def _poll_download(message: Message, job_id: str) -> None:
-    last_text = None
-    while True:
-        await asyncio.sleep(1.5)
-        progress = downloader.get_progress(job_id)
-        if not progress:
-            return
-        status = progress.get("status")
-        if status == "downloading":
-            pct = progress.get("percent")
-            text = f"Yuklanmoqda: {pct if pct is not None else 0}%"
-        elif status == "merging":
-            text = "Video va audio birlashtirilmoqda..."
-        elif status == "finished":
-            await _safe_edit(message, "Tayyor! Yuborilmoqda...")
-            await _send_result_file(message, progress["file"])
-            downloader.cleanup_job(job_id)
-            return
-        elif status == "error":
-            await _safe_edit(message, f"Xatolik: {progress.get('error')}")
-            return
-        else:
-            continue
-        if text != last_text:
-            await _safe_edit(message, text)
-            last_text = text
+async def _poll_download(
+    message: Message,
+    ctx: VideoContext,
+    job_id: str,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+) -> None:
+    try:
+        last_caption = None
+        while True:
+            await asyncio.sleep(1.5)
+            progress = downloader.get_progress(job_id)
+            if not progress:
+                return
+            status = progress.get("status")
+            if status == "downloading":
+                caption = texts.download_progress_caption(ctx, progress.get("percent"), progress.get("speed"))
+            elif status == "merging":
+                caption = texts.merging_caption(ctx)
+            elif status == "finished":
+                await _edit_card(message, texts.uploading_caption(ctx))
+                await _send_result_file(
+                    message, progress["file"], width=width, height=height, duration=ctx.duration
+                )
+                downloader.cleanup_job(job_id)
+                return
+            elif status == "error":
+                await _edit_card(message, texts.error_caption(ctx, progress.get("error")))
+                return
+            else:
+                continue
+            if caption != last_caption:
+                await _edit_card(message, caption)
+                last_caption = caption
+    except Exception:
+        logger.exception("Download poll loop failed for job %s", job_id)
+        await _edit_card(message, texts.unexpected_error_caption(ctx))
+    finally:
+        ctx.busy = False
 
 
-async def _poll_separate(message: Message, job_id: str) -> None:
-    last_text = None
-    while True:
-        await asyncio.sleep(1.5)
-        progress = separator.get_progress(job_id)
-        if not progress:
-            return
-        status = progress.get("status")
-        pct = progress.get("percent", 0)
-        if status == "downloading":
-            text = f"Audio yuklab olinmoqda: {pct}%"
-        elif status == "separating":
-            text = f"Ajratilmoqda: {pct}% (bir necha daqiqa vaqt olishi mumkin)"
-        elif status == "finished":
-            await _safe_edit(message, "Tayyor! Yuborilmoqda...")
-            await _send_result_file(message, progress["speech_file"], caption="Gap (speech)")
-            separator.cleanup_file(job_id, "speech")
-            await _send_result_file(message, progress["background_file"], caption="Fon (background)")
-            separator.cleanup_file(job_id, "background")
-            return
-        elif status == "error":
-            await _safe_edit(message, f"Xatolik: {progress.get('error')}")
-            return
-        else:
-            continue
-        if text != last_text:
-            await _safe_edit(message, text)
-            last_text = text
+async def _poll_separate(message: Message, ctx: VideoContext, job_id: str) -> None:
+    try:
+        last_caption = None
+        while True:
+            await asyncio.sleep(1.5)
+            progress = separator.get_progress(job_id)
+            if not progress:
+                return
+            status = progress.get("status")
+            pct = progress.get("percent", 0)
+            if status in ("downloading", "separating"):
+                caption = texts.separate_progress_caption(ctx, status, pct)
+            elif status == "finished":
+                await _edit_card(message, texts.uploading_caption(ctx))
+                await _send_result_file(message, progress["speech_file"], caption="🗣 Nutq (speech)")
+                separator.cleanup_file(job_id, "speech")
+                await _send_result_file(message, progress["background_file"], caption="🎼 Fon (background)")
+                separator.cleanup_file(job_id, "background")
+                return
+            elif status == "error":
+                await _edit_card(message, texts.error_caption(ctx, progress.get("error")))
+                return
+            else:
+                continue
+            if caption != last_caption:
+                await _edit_card(message, caption)
+                last_caption = caption
+    except Exception:
+        logger.exception("Separate poll loop failed for job %s", job_id)
+        await _edit_card(message, texts.unexpected_error_caption(ctx))
+    finally:
+        ctx.busy = False
 
 
-@router.callback_query(F.data.startswith("dl:"))
-async def on_download_video(callback: CallbackQuery) -> None:
-    _, token, video_format_id = callback.data.split(":", 2)
-    ctx = contexts.get(token)
+# ---------------------------------------------------------------------------
+# Ish (job) boshlash
+# ---------------------------------------------------------------------------
+
+@router.callback_query(DownloadVideoCB.filter())
+async def on_download_video(callback: CallbackQuery, callback_data: DownloadVideoCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
     if not ctx:
-        await callback.answer("Muddati tugagan, havolani qayta yuboring.", show_alert=True)
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
         return
+    if ctx.busy:
+        await callback.answer(texts.BUSY_ALERT, show_alert=True)
+        return
+    ctx.busy = True
     await callback.answer()
     job_id = downloader.start_download(
-        ctx["url"], video_format_id, ctx["audio_format_id"], False, ctx["title"]
+        ctx.url, callback_data.format_id, ctx.audio_format_id, False, ctx.title
     )
-    await callback.message.edit_text("Boshlanmoqda...")
-    asyncio.create_task(_poll_download(callback.message, job_id))
+    chosen = next((r for r in ctx.resolutions if r["format_id"] == callback_data.format_id), None)
+    await _edit_card(callback.message, texts.starting_caption(ctx))
+    asyncio.create_task(_poll_download(
+        callback.message, ctx, job_id,
+        width=chosen.get("width") if chosen else None,
+        height=chosen.get("height") if chosen else None,
+    ))
 
 
-@router.callback_query(F.data.startswith("da:"))
-async def on_download_audio(callback: CallbackQuery) -> None:
-    _, token = callback.data.split(":", 1)
-    ctx = contexts.get(token)
+@router.callback_query(DownloadAudioCB.filter())
+async def on_download_audio(callback: CallbackQuery, callback_data: DownloadAudioCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
     if not ctx:
-        await callback.answer("Muddati tugagan, havolani qayta yuboring.", show_alert=True)
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
         return
+    if ctx.busy:
+        await callback.answer(texts.BUSY_ALERT, show_alert=True)
+        return
+    ctx.busy = True
     await callback.answer()
-    job_id = downloader.start_download(ctx["url"], None, ctx["audio_format_id"], True, ctx["title"])
-    await callback.message.edit_text("Boshlanmoqda...")
-    asyncio.create_task(_poll_download(callback.message, job_id))
+    job_id = downloader.start_download(ctx.url, None, ctx.audio_format_id, True, ctx.title)
+    await _edit_card(callback.message, texts.starting_caption(ctx))
+    asyncio.create_task(_poll_download(callback.message, ctx, job_id))
 
 
-@router.callback_query(F.data.startswith("sd:") | F.data.startswith("su:"))
-async def on_separate(callback: CallbackQuery) -> None:
-    engine_prefix, token = callback.data.split(":", 1)
-    engine = "demucs" if engine_prefix == "sd" else "uvr"
-    ctx = contexts.get(token)
+@router.callback_query(SeparateCB.filter())
+async def on_separate(callback: CallbackQuery, callback_data: SeparateCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
     if not ctx:
-        await callback.answer("Muddati tugagan, havolani qayta yuboring.", show_alert=True)
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
         return
-    if not ctx["audio_format_id"]:
-        await callback.answer("Bu video uchun audio trek topilmadi.", show_alert=True)
+    if not ctx.audio_format_id:
+        await callback.answer(texts.NO_AUDIO_ALERT, show_alert=True)
         return
+    if ctx.busy:
+        await callback.answer(texts.BUSY_ALERT, show_alert=True)
+        return
+    ctx.busy = True
     await callback.answer()
-    job_id = separator.start_separation(ctx["url"], ctx["audio_format_id"], ctx["title"], engine)
-    await callback.message.edit_text("Boshlanmoqda...")
-    asyncio.create_task(_poll_separate(callback.message, job_id))
+    job_id = separator.start_separation(ctx.url, ctx.audio_format_id, ctx.title, callback_data.engine)
+    await _edit_card(callback.message, texts.starting_caption(ctx))
+    asyncio.create_task(_poll_separate(callback.message, ctx, job_id))
+
+
+@router.errors()
+async def on_error(event, exception: Exception) -> bool:
+    logger.exception("Unhandled error while processing update: %s", exception)
+    return True
 
 
 async def main() -> None:
     session = None
     if LOCAL_API_BASE_URL:
         session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_API_BASE_URL, is_local=True))
-    bot = Bot(BOT_TOKEN, session=session)
+    bot = Bot(BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_router(router)
     await dp.start_polling(bot)

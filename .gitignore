@@ -15,3 +15,10 @@ node_modules/
 cookies.txt
 *_cookies.txt
 backend/cookies.txt
+
+# Test uchun ildiz papkaga tushib qolishi mumkin bo'lgan media fayllar
+# (haqiqiy yuklab olingan fayllar backend/downloads/ ichida bo'lishi kerak).
+/*.mp4
+/*.mp3
+/*.webm
+/*.mkv
