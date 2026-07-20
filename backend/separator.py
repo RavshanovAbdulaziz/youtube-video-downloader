@@ -8,33 +8,18 @@ import uuid
 
 import yt_dlp
 
+import ai_setup
+import paths
 from downloader import DOWNLOADS_DIR, _sanitize_filename, _unique_path, ydl_opts_ctx
 
-SEPARATE_TMP_DIR = os.path.join(os.path.dirname(__file__), "downloads", "_separate_tmp")
-os.makedirs(SEPARATE_TMP_DIR, exist_ok=True)
+SEPARATE_TMP_DIR = paths.SEPARATE_TMP_DIR
 
 # numba standart holatda keshni site-packages ichiga yozadi — admin bo'lmagan
 # jarayon u yerga yoza olmay, tempfile abadiy qayta urinish tsikliga tushib qoladi.
-NUMBA_CACHE_DIR = os.path.join(os.path.dirname(__file__), "_numba_cache")
-os.makedirs(NUMBA_CACHE_DIR, exist_ok=True)
+NUMBA_CACHE_DIR = paths.NUMBA_CACHE_DIR
 
 UVR_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 _PERCENT_RE = re.compile(r"(\d{1,3})%\|")
-
-
-def _detect_device() -> str:
-    try:
-        import torch
-        if torch.cuda.is_available():
-            print(f"[separator] GPU topildi: {torch.cuda.get_device_name(0)} — CUDA ishlatiladi")
-            return "cuda"
-    except ImportError:
-        pass
-    print("[separator] GPU topilmadi (yoki torch o'rnatilmagan) — CPU ishlatiladi")
-    return "cpu"
-
-
-DEVICE = _detect_device()
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -46,9 +31,28 @@ def _set_percent(job_id: str, percent: int) -> None:
             jobs[job_id]["percent"] = percent
 
 
+def _set_ai_progress(job_id: str, stage: str, percent: int) -> None:
+    with jobs_lock:
+        if job_id in jobs:
+            jobs[job_id]["ai_stage"] = stage
+            jobs[job_id]["percent"] = percent
+
+
+def _subprocess_env() -> dict:
+    env = {**os.environ, "NUMBA_CACHE_DIR": NUMBA_CACHE_DIR, "PYTHONUNBUFFERED": "1"}
+    # demucs/audio-separator shell out to ffmpeg themselves (no equivalent of
+    # yt-dlp's ffmpeg_location option) — in a packaged build there's no
+    # system-wide ffmpeg, so we prepend the bundled copy's folder to this
+    # subprocess's PATH only (doesn't touch the real system PATH).
+    ffmpeg_dir = paths.bundled_ffmpeg_dir()
+    if ffmpeg_dir:
+        env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _run_with_progress(cmd: list[str], job_id: str) -> None:
     """Run a subprocess, parsing tqdm-style 'NN%|' output to report live progress."""
-    env = {**os.environ, "NUMBA_CACHE_DIR": NUMBA_CACHE_DIR, "PYTHONUNBUFFERED": "1"}
+    env = _subprocess_env()
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         env=env,
@@ -77,10 +81,17 @@ def _run_with_progress(cmd: list[str], job_id: str) -> None:
         raise RuntimeError("".join(tail_chars)[-2000:] or f"process exited with code {returncode}")
 
 
+def _script_exe(name: str) -> str:
+    """AI kutubxonalari bilan birga o'rnatilgan konsol skript (masalan
+    demucs.exe) yo'li. PATH'ga tayanmaydi — paketlangan runtime'da bu papka
+    tizim PATH'ida bo'lmasligi mumkin."""
+    return os.path.join(paths.runtime_scripts_dir(), f"{name}.exe")
+
+
 def _run_demucs(source_file: str, work_dir: str, job_id: str) -> tuple[str, str]:
     _run_with_progress(
-        ["demucs", "--two-stems", "vocals", "--mp3", "-n", "htdemucs",
-         "-d", DEVICE, "-o", work_dir, source_file],
+        [_script_exe("demucs"), "--two-stems", "vocals", "--mp3", "-n", "htdemucs",
+         "-d", ai_setup.current_device(), "-o", work_dir, source_file],
         job_id,
     )
     stem_name = os.path.splitext(os.path.basename(source_file))[0]
@@ -90,7 +101,7 @@ def _run_demucs(source_file: str, work_dir: str, job_id: str) -> tuple[str, str]
 
 def _run_uvr(source_file: str, work_dir: str, job_id: str) -> tuple[str, str]:
     _run_with_progress(
-        ["audio-separator", source_file, "--model_filename", UVR_MODEL,
+        [_script_exe("audio-separator"), source_file, "--model_filename", UVR_MODEL,
          "--output_dir", work_dir, "--output_format", "mp3"],
         job_id,
     )
@@ -124,12 +135,24 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
 
     job_id = uuid.uuid4().hex
     with jobs_lock:
-        jobs[job_id] = {"status": "downloading", "percent": 0}
+        jobs[job_id] = {"status": "queued", "percent": 0}
 
     def run():
         work_dir = os.path.join(SEPARATE_TMP_DIR, job_id)
         os.makedirs(work_dir, exist_ok=True)
         try:
+            if not ai_setup.is_ai_installed():
+                # Bir martalik, birinchi ishlatishda: AI kutubxonalari (torch/
+                # demucs/audio-separator) fonda avtomatik o'rnatiladi. Foydalanuvchi
+                # hech qanday buyruq yozmaydi — progress shu jobning o'zida
+                # ko'rsatiladi (installing_ai -> downloading -> separating).
+                with jobs_lock:
+                    jobs[job_id].update(status="installing_ai", percent=0, ai_stage="torch")
+                ai_setup.ensure_installed(lambda stage, pct: _set_ai_progress(job_id, stage, pct))
+
+            with jobs_lock:
+                jobs[job_id].update(status="downloading", percent=0)
+
             base_opts = {
                 "format": audio_format_id,
                 "outtmpl": os.path.join(work_dir, "source.%(ext)s"),

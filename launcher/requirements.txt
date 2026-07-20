@@ -1,0 +1,5 @@
+# Tray-launcher (`tray_app.py`) uchun qo'shimcha kutubxonalar — `backend/requirements.txt`
+# ustiga o'rnatiladi (backend/*.py fayllar ham shu yerdan import qilinadi,
+# shuning uchun ikkalasini birga o'rnating).
+pystray
+Pillow

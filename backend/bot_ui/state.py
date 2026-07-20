@@ -9,7 +9,7 @@ class VideoContext:
 
     __slots__ = (
         "url", "title", "duration", "thumbnail",
-        "resolutions", "audio_tracks", "audio_index", "busy", "created_at",
+        "resolutions", "audio_tracks", "audio_index", "busy_actions", "created_at",
     )
 
     def __init__(
@@ -32,7 +32,10 @@ class VideoContext:
             if track.get("is_original"):
                 self.audio_index = i
                 break
-        self.busy = False
+        # Har bir amal (masalan "dv:137", "da", "se:demucs") o'z holicha
+        # kuzatiladi — shu video uchun bitta xizmat ishlayotgan bo'lsa ham,
+        # foydalanuvchi kartochkadan boshqa xizmatni parallel tanlay oladi.
+        self.busy_actions: set[str] = set()
         self.created_at = time.monotonic()
 
     @property
@@ -46,6 +49,17 @@ class VideoContext:
         if not self.audio_tracks:
             return None
         return self.audio_tracks[self.audio_index].get("label")
+
+    def try_start(self, action_key: str) -> bool:
+        """Agar shu amal allaqachon ishlayotgan bo'lmasa, band deb belgilaydi
+        va True qaytaradi (bir xil tugmani ketma-ket bosishdan himoya)."""
+        if action_key in self.busy_actions:
+            return False
+        self.busy_actions.add(action_key)
+        return True
+
+    def finish(self, action_key: str) -> None:
+        self.busy_actions.discard(action_key)
 
 
 class ContextStore:

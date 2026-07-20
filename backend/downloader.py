@@ -8,10 +8,11 @@ import uuid
 
 import yt_dlp
 
+import paths
+
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+DOWNLOADS_DIR = paths.DOWNLOADS_DIR
 
 # Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni
 # YouTube ko'pincha "sign in to confirm you're not a bot" deb bloklaydi.
@@ -34,6 +35,16 @@ def ydl_opts_ctx(extra: dict):
     opts = {"js_runtimes": {"node": {}}, **extra}
     if POT_BASE_URL:
         opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [POT_BASE_URL]}}
+    # Paketlangan (plug-and-play) versiyada ffmpeg va Node.js tizim PATH'ida
+    # emas, dastur bilan birga keladi — shu holatda ularning aniq yo'lini
+    # ko'rsatamiz. Manba koddan ishga tushirilganda (APP_RUNTIME_DIR yo'q)
+    # ikkalasi ham None qaytadi va avvalgidek tizim PATH'iga tayaniladi.
+    ffmpeg_dir = paths.bundled_ffmpeg_dir()
+    if ffmpeg_dir:
+        opts["ffmpeg_location"] = ffmpeg_dir
+    node_exe = paths.bundled_node_exe()
+    if node_exe:
+        opts["js_runtimes"] = {"node": {"path": node_exe}}
     tmp_cookie = None
     if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
         fd, tmp_cookie = tempfile.mkstemp(suffix=".txt")

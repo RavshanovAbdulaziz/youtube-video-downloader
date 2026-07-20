@@ -98,8 +98,22 @@ def merging_caption(ctx) -> str:
     return card_header(ctx) + "\n\n🔧 Video va audio birlashtirilmoqda..."
 
 
-def separate_progress_caption(ctx, status: str, percent) -> str:
+_AI_STAGE_LABELS = {
+    "torch": "PyTorch", "demucs": "Demucs", "separator": "UVR/audio-separator",
+    "compat": "moslashtirish",
+}
+
+
+def separate_progress_caption(ctx, status: str, percent, ai_stage: str | None = None) -> str:
     pct = percent or 0
+    if status == "installing_ai":
+        stage_label = _AI_STAGE_LABELS.get(ai_stage, "")
+        return (
+            card_header(ctx) + "\n\n"
+            f"⚙️ AI komponentlari o'rnatilmoqda{f' ({stage_label})' if stage_label else ''}\n"
+            f"<code>{progress_bar(pct)}</code> {pct}%\n"
+            "<i>(bir martalik jarayon, internetga bog'liq)</i>"
+        )
     if status == "downloading":
         return (
             card_header(ctx) + "\n\n"

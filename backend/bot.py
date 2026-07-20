@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -30,7 +31,9 @@ from bot_ui.state import ContextStore, VideoContext
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("bot")
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+# Eslatma: BOT_TOKEN modul darajasida O'QILMAYDI — tray launcher botni shaxsiy
+# tokensiz ham (faqat Web UI rejimida) import qila olishi kerak, xatosiz.
+# Token faqat build()/main() ga parametr sifatida beriladi (pastga qarang).
 WEB_UI_URL = os.environ.get("WEB_UI_URL", "")
 LOCAL_API_BASE_URL = os.environ.get("LOCAL_API_BASE_URL", "")
 # 50MB — standart Telegram Bot API cheklovi. Lokal Bot API server (--local
@@ -223,16 +226,25 @@ async def _send_result_file(
         await message.answer_document(file, caption=caption)
 
 
+async def _safe_edit_text(message: Message, text: str) -> None:
+    try:
+        await message.edit_text(text)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+
 async def _poll_download(
     message: Message,
     ctx: VideoContext,
     job_id: str,
+    action_key: str,
     *,
     width: int | None = None,
     height: int | None = None,
 ) -> None:
     try:
-        last_caption = None
+        last_text = None
         while True:
             await asyncio.sleep(1.5)
             progress = downloader.get_progress(job_id)
@@ -240,34 +252,34 @@ async def _poll_download(
                 return
             status = progress.get("status")
             if status == "downloading":
-                caption = texts.download_progress_caption(ctx, progress.get("percent"), progress.get("speed"))
+                text = texts.download_progress_caption(ctx, progress.get("percent"), progress.get("speed"))
             elif status == "merging":
-                caption = texts.merging_caption(ctx)
+                text = texts.merging_caption(ctx)
             elif status == "finished":
-                await _edit_card(message, texts.uploading_caption(ctx))
+                await _safe_edit_text(message, texts.uploading_caption(ctx))
                 await _send_result_file(
                     message, progress["file"], width=width, height=height, duration=ctx.duration
                 )
                 downloader.cleanup_job(job_id)
                 return
             elif status == "error":
-                await _edit_card(message, texts.error_caption(ctx, progress.get("error")))
+                await _safe_edit_text(message, texts.error_caption(ctx, progress.get("error")))
                 return
             else:
                 continue
-            if caption != last_caption:
-                await _edit_card(message, caption)
-                last_caption = caption
+            if text != last_text:
+                await _safe_edit_text(message, text)
+                last_text = text
     except Exception:
         logger.exception("Download poll loop failed for job %s", job_id)
-        await _edit_card(message, texts.unexpected_error_caption(ctx))
+        await _safe_edit_text(message, texts.unexpected_error_caption(ctx))
     finally:
-        ctx.busy = False
+        ctx.finish(action_key)
 
 
-async def _poll_separate(message: Message, ctx: VideoContext, job_id: str) -> None:
+async def _poll_separate(message: Message, ctx: VideoContext, job_id: str, action_key: str) -> None:
     try:
-        last_caption = None
+        last_text = None
         while True:
             await asyncio.sleep(1.5)
             progress = separator.get_progress(job_id)
@@ -275,28 +287,28 @@ async def _poll_separate(message: Message, ctx: VideoContext, job_id: str) -> No
                 return
             status = progress.get("status")
             pct = progress.get("percent", 0)
-            if status in ("downloading", "separating"):
-                caption = texts.separate_progress_caption(ctx, status, pct)
+            if status in ("installing_ai", "downloading", "separating"):
+                text = texts.separate_progress_caption(ctx, status, pct, progress.get("ai_stage"))
             elif status == "finished":
-                await _edit_card(message, texts.uploading_caption(ctx))
+                await _safe_edit_text(message, texts.uploading_caption(ctx))
                 await _send_result_file(message, progress["speech_file"], caption="🗣 Nutq (speech)")
                 separator.cleanup_file(job_id, "speech")
                 await _send_result_file(message, progress["background_file"], caption="🎼 Fon (background)")
                 separator.cleanup_file(job_id, "background")
                 return
             elif status == "error":
-                await _edit_card(message, texts.error_caption(ctx, progress.get("error")))
+                await _safe_edit_text(message, texts.error_caption(ctx, progress.get("error")))
                 return
             else:
                 continue
-            if caption != last_caption:
-                await _edit_card(message, caption)
-                last_caption = caption
+            if text != last_text:
+                await _safe_edit_text(message, text)
+                last_text = text
     except Exception:
         logger.exception("Separate poll loop failed for job %s", job_id)
-        await _edit_card(message, texts.unexpected_error_caption(ctx))
+        await _safe_edit_text(message, texts.unexpected_error_caption(ctx))
     finally:
-        ctx.busy = False
+        ctx.finish(action_key)
 
 
 # ---------------------------------------------------------------------------
@@ -309,18 +321,22 @@ async def on_download_video(callback: CallbackQuery, callback_data: DownloadVide
     if not ctx:
         await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
         return
-    if ctx.busy:
+    action_key = f"dv:{callback_data.format_id}"
+    if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
-    ctx.busy = True
     await callback.answer()
     job_id = downloader.start_download(
         ctx.url, callback_data.format_id, ctx.audio_format_id, False, ctx.title
     )
     chosen = next((r for r in ctx.resolutions if r["format_id"] == callback_data.format_id), None)
-    await _edit_card(callback.message, texts.starting_caption(ctx))
+    # Kartochka (thumbnail + menyu) o'z holicha qoladi — foydalanuvchi shu
+    # video uchun darhol boshqa xizmatni ham tanlay oladi. Progress alohida
+    # xabarda kuzatiladi.
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+    status = await callback.message.answer(texts.starting_caption(ctx))
     asyncio.create_task(_poll_download(
-        callback.message, ctx, job_id,
+        status, ctx, job_id, action_key,
         width=chosen.get("width") if chosen else None,
         height=chosen.get("height") if chosen else None,
     ))
@@ -332,14 +348,15 @@ async def on_download_audio(callback: CallbackQuery, callback_data: DownloadAudi
     if not ctx:
         await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
         return
-    if ctx.busy:
+    action_key = "da"
+    if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
-    ctx.busy = True
     await callback.answer()
     job_id = downloader.start_download(ctx.url, None, ctx.audio_format_id, True, ctx.title)
-    await _edit_card(callback.message, texts.starting_caption(ctx))
-    asyncio.create_task(_poll_download(callback.message, ctx, job_id))
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+    status = await callback.message.answer(texts.starting_caption(ctx))
+    asyncio.create_task(_poll_download(status, ctx, job_id, action_key))
 
 
 @router.callback_query(SeparateCB.filter())
@@ -351,14 +368,15 @@ async def on_separate(callback: CallbackQuery, callback_data: SeparateCB) -> Non
     if not ctx.audio_format_id:
         await callback.answer(texts.NO_AUDIO_ALERT, show_alert=True)
         return
-    if ctx.busy:
+    action_key = f"se:{callback_data.engine}"
+    if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
-    ctx.busy = True
     await callback.answer()
     job_id = separator.start_separation(ctx.url, ctx.audio_format_id, ctx.title, callback_data.engine)
-    await _edit_card(callback.message, texts.starting_caption(ctx))
-    asyncio.create_task(_poll_separate(callback.message, ctx, job_id))
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+    status = await callback.message.answer(texts.starting_caption(ctx))
+    asyncio.create_task(_poll_separate(status, ctx, job_id, action_key))
 
 
 @router.errors()
@@ -367,15 +385,27 @@ async def on_error(event, exception: Exception) -> bool:
     return True
 
 
-async def main() -> None:
+def build(token: str) -> tuple[Bot, Dispatcher]:
+    """Bot/Dispatcher juftligini yaratadi (ishga tushirmasdan) — chaqiruvchi
+    tomon `dp`ni saqlab qolsa, keyinchalik `dp.stop_polling()` orqali
+    boshqa thread'dan ham botni to'xtata oladi (masalan tray ilovasidan)."""
     session = None
     if LOCAL_API_BASE_URL:
         session = AiohttpSession(api=TelegramAPIServer.from_base(LOCAL_API_BASE_URL, is_local=True))
-    bot = Bot(BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = Bot(token, session=session, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_router(router)
+    return bot, dp
+
+
+async def main(token: str) -> None:
+    bot, dp = build(token)
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    _token = os.environ.get("BOT_TOKEN")
+    if not _token:
+        print("XATO: BOT_TOKEN muhit o'zgaruvchisi topilmadi (backend/.env ichida BOT_TOKEN=... bo'lishi kerak).")
+        sys.exit(1)
+    asyncio.run(main(_token))

@@ -280,7 +280,11 @@ function pollSeparateProgress(jobId, base) {
     const data = await res.json();
     const pct = data.percent != null ? data.percent : 0;
 
-    if (data.status === "downloading") {
+    if (data.status === "installing_ai") {
+      const stageLabel = { torch: "PyTorch", demucs: "Demucs", separator: "UVR/audio-separator", compat: "moslashtirish" }[data.ai_stage] || "";
+      setProgress(separateProgressFill, pct, false);
+      separateProgressText.textContent = `AI komponentlari o'rnatilmoqda (${stageLabel}): ${pct}% — bu bir martalik jarayon, internetga bog'liq`;
+    } else if (data.status === "downloading") {
       setProgress(separateProgressFill, pct, false);
       separateProgressText.textContent = `Audio yuklab olinmoqda: ${pct}%`;
     } else if (data.status === "separating") {
