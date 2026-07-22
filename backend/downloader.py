@@ -9,18 +9,24 @@ import uuid
 import yt_dlp
 
 import paths
+import pot_server
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 DOWNLOADS_DIR = paths.DOWNLOADS_DIR
 
-# Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni
-# YouTube ko'pincha "sign in to confirm you're not a bot" deb bloklaydi.
+# Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni,
+# va tobora ko'proq holatlarda hatto rezidensial IP'lardan kelgan so'rovlarni
+# ham, YouTube "sign in to confirm you're not a bot" deb bloklashi mumkin.
 # Asosiy yechim: PO token provider (bgutil) — hisobga bog'liq bo'lmagan,
 # cookie kabi "bekor qilinish"ga moyil bo'lmagan usul
-# (https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). cookies.txt
-# (agar berilgan bo'lsa) qo'shimcha, lekin shart emas.
-COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+# (https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). Server/Docker
+# joylashtirishda YTDLP_POT_BASE_URL alohida konteynerga ishora qiladi; lokal
+# Windows ishga tushirishda esa (bu env var berilmagan bo'lsa) pot_server.py
+# lokal bgutil serverini o'zi avtomatik topib, fon jarayoni sifatida ishga
+# tushiradi — foydalanuvchi hech narsa sozlamaydi. cookies.txt (agar
+# backend/ papkasiga qo'yilgan bo'lsa) qo'shimcha himoya, shart emas.
+COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "") or paths.default_cookies_file() or ""
 POT_BASE_URL = os.environ.get("YTDLP_POT_BASE_URL", "")
 
 
@@ -33,8 +39,9 @@ def ydl_opts_ctx(extra: dict):
     asta-sekin buzilib boradi. Asosiy fayl hech qachon o'zgarmaydi.
     """
     opts = {"js_runtimes": {"node": {}}, **extra}
-    if POT_BASE_URL:
-        opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [POT_BASE_URL]}}
+    pot_base_url = POT_BASE_URL or pot_server.ensure_running()
+    if pot_base_url:
+        opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [pot_base_url]}}
     # Paketlangan (plug-and-play) versiyada ffmpeg va Node.js tizim PATH'ida
     # emas, dastur bilan birga keladi — shu holatda ularning aniq yo'lini
     # ko'rsatamiz. Manba koddan ishga tushirilganda (APP_RUNTIME_DIR yo'q)

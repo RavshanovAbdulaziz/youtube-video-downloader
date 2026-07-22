@@ -171,10 +171,28 @@ emas.
 
 **Amaldagi yechim:** Telegram bot va (agar ruxsat berilsa) Web UI'ning
 yuklab olish/ajratish qismi **shaxsiy kompyuterda** (rezidensial IP orqali)
-ishlaydi — bunda bu muammo umuman yo'q. Yuqoridagi "Telegram bot" bo'limiga
-qarang.
+ishlaydi — bunda bu muammo ancha kamroq uchraydi, lekin **rezidensial
+IP'larda ham to'liq yo'qolmagan** — YouTube tobora ko'proq holatlarda haqiqiy
+PO (Proof-of-Origin) token talab qiladi.
 
-Agar baribir serverda ham cookie orqali urinib ko'rmoqchi bo'lsangiz:
+**Lokal (Windows) ishga tushirishda ikkita himoya avtomatik ishlaydi, hech
+qanday sozlash shart emas:**
+
+1. **Lokal bgutil PO token serveri** — agar
+   [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+   repozitoriysi qo'lda klonlanib qurilgan bo'lsa (`git clone` + `server/`
+   papkasida `npm ci && npx tsc`, standart joy: foydalanuvchi papkasidagi
+   `bgutil-ytdlp-pot-provider\server`), `backend/pot_server.py` uni birinchi
+   so'rovda avtomatik fon jarayoni sifatida ishga tushiradi (port 4416) va PO
+   token'ni o'zi ta'minlaydi. Buni hali qurmagan bo'lsangiz, yuqoridagi
+   havoladagi "Installation" bo'limiga qarang — bu ixtiyoriy, lekin eng
+   barqaror yechim (cookie'ga bog'liq emas, hisob bekor qilinishidan
+   ta'sirlanmaydi).
+2. **cookies.txt** — `backend/cookies.txt` fayli mavjud bo'lsa (pastga
+   qarang), hech qanday `.env` sozlamasisiz avtomatik topiladi va ishlatiladi.
+
+Agar serverda (Oracle Cloud va h.k.) ham cookie orqali urinib ko'rmoqchi
+bo'lsangiz:
 
 1. Chrome/Firefox'ga "Get cookies.txt LOCALLY" kabi kengaytma o'rnating.
 2. youtube.com'da tizimga kirgan holda cookie'larni `cookies.txt` (Netscape

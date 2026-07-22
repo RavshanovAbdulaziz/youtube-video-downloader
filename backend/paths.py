@@ -111,3 +111,33 @@ def runtime_python_exe() -> str:
 
 def runtime_scripts_dir() -> str:
     return os.path.join(os.path.dirname(runtime_python_exe()), "Scripts")
+
+
+def default_cookies_file() -> str | None:
+    """YTDLP_COOKIES_FILE aniq berilmagan bo'lsa ham, foydalanuvchi
+    `cookies.txt`ni odatiy joyga (backend papkasi yoki paketlangan
+    qurilmada ma'lumotlar papkasi) qo'yishi bilan avtomatik topiladi —
+    cookies.txt.example'da tasvirlangan oqim aynan shunday ishlashi kerak."""
+    for candidate in (os.path.join(_base_dir(), "cookies.txt"), os.path.join(_BACKEND_DIR, "cookies.txt")):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def bundled_bgutil_server_dir() -> str | None:
+    """Lokal "bgutil" PO token HTTP serverining (`server/build/main.js`)
+    qurilgan nusxasi joylashgan papka — topilsa, downloader.py uni avtomatik
+    fon jarayoni sifatida ishga tushiradi (pot_server.py'ga qarang)."""
+    override = os.environ.get("BGUTIL_SERVER_DIR")
+    if override and os.path.isdir(override):
+        return override
+    root = _runtime_root()
+    if root:
+        candidate = os.path.join(root, "bgutil", "server")
+        if os.path.isdir(candidate):
+            return candidate
+    # Dev-qulaylik: bgutil-ytdlp-pot-provider'ning o'zi ham "script mode" uchun
+    # shu joyni standart deb hisoblaydi — qo'lda shu yerga klonlab qurilgan
+    # bo'lsa (server/README.md), avtomatik topiladi.
+    home_candidate = os.path.join(os.path.expanduser("~"), "bgutil-ytdlp-pot-provider", "server")
+    return home_candidate if os.path.isdir(home_candidate) else None

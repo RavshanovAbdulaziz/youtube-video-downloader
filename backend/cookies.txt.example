@@ -5,6 +5,8 @@
 # (bu fayl .gitignore'da — hech qachon git'ga qo'shilmaydi, chunki unda
 # sessiya cookie'lari, ya'ni maxfiy ma'lumot bor).
 #
-# Nega kerak: bulutli server (masalan Oracle Cloud) IP manzillaridan kelgan
-# so'rovlarni YouTube ko'pincha "Sign in to confirm you're not a bot" deb
-# bloklaydi. Haqiqiy hisobingiz cookie'lari bilan bu chetlab o'tiladi.
+# Nega kerak: YouTube ba'zan (bulutli server IP'laridan ko'proq, lekin
+# rezidensial/lokal IP'lardan ham) so'rovlarni "Sign in to confirm you're not
+# a bot" deb bloklaydi. Haqiqiy hisobingiz cookie'lari bilan bu chetlab
+# o'tiladi. Bu fayl backend/ papkasida turgani yetarli — YTDLP_COOKIES_FILE
+# kabi qo'shimcha .env sozlamasi shart emas, avtomatik topiladi.
