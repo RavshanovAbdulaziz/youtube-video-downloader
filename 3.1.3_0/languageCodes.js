@@ -1,0 +1,1 @@
+const e=["en","fr","es","pt","de","it","ja","ko","zh","ar","ru","hi","tr","pl","nl","sv","no","da","fi","cs","el","he","hu","id","ms","ro","sk","th","uk","vi","bg","hr","sr","sl","et","lv","lt","fa","bn","ta","te","ml","mr","gu","kn","en-us","en-gb","en-au","en-ca","es-419","es-es","es-mx","pt-br","pt-pt","fr-ca","zh-hans","zh-hant","zh-tw","zh-hk"];export{e as C};
