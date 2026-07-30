@@ -11,14 +11,18 @@ const audioToggle = document.getElementById("audio-toggle");
 const videoLangLabel = document.getElementById("video-lang-label");
 const videoLangSelect = document.getElementById("video-lang-select");
 const downloadVideoBtn = document.getElementById("download-video-btn");
-const audioSection = document.getElementById("audio-section");
 const audioLangSelect = document.getElementById("audio-lang-select");
 const downloadAudioBtn = document.getElementById("download-audio-btn");
 const progressWrap = document.getElementById("progress-wrap");
 const progressFill = document.getElementById("progress-fill");
 const progressText = document.getElementById("progress-text");
 const fileLink = document.getElementById("file-link");
-const separateSection = document.getElementById("separate-section");
+const subtitleLangSelect = document.getElementById("subtitle-lang-select");
+const downloadSubtitleBtn = document.getElementById("download-subtitle-btn");
+const subtitleProgressWrap = document.getElementById("subtitle-progress-wrap");
+const subtitleProgressFill = document.getElementById("subtitle-progress-fill");
+const subtitleProgressText = document.getElementById("subtitle-progress-text");
+const subtitleFileLink = document.getElementById("subtitle-file-link");
 const separateEngineSelect = document.getElementById("separate-engine-select");
 const separateLangSelect = document.getElementById("separate-lang-select");
 const separateBtn = document.getElementById("separate-btn");
@@ -28,12 +32,47 @@ const separateProgressText = document.getElementById("separate-progress-text");
 const separateLinks = document.getElementById("separate-links");
 const speechFileLink = document.getElementById("speech-file-link");
 const backgroundFileLink = document.getElementById("background-file-link");
+const clipRangeStart = document.getElementById("clip-range-start");
+const clipRangeEnd = document.getElementById("clip-range-end");
+const clipStartLabel = document.getElementById("clip-start-label");
+const clipEndLabel = document.getElementById("clip-end-label");
+const clipSliderFill = document.getElementById("clip-slider-fill");
 const computeModal = document.getElementById("compute-modal");
 const computeYesBtn = document.getElementById("compute-yes-btn");
 const computeNoBtn = document.getElementById("compute-no-btn");
 const computeStatus = document.getElementById("compute-status");
+const tabsNav = document.getElementById("tabs");
+const tabButtons = Array.from(document.querySelectorAll(".tab"));
+const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
 
 let currentInfo = null;
+
+// ---------------------------------------------------------------------------
+// Tabs (Video / Audio / Subtitr / AI ajratish)
+// ---------------------------------------------------------------------------
+
+function setActiveTab(tabId) {
+  tabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
+  tabPanels.forEach((panel) => {
+    const panels = panel.dataset.panel.split(" ");
+    panel.classList.toggle("active", panels.includes(tabId));
+  });
+}
+
+tabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+});
+
+function updateTabsAvailability(data) {
+  const hasAudio = data.audio_tracks.length > 0;
+  const hasSubtitles = (data.subtitles || []).length > 0;
+  document.querySelector('.tab[data-tab="audio"]').classList.toggle("hidden", !hasAudio);
+  document.querySelector('.tab[data-tab="separate"]').classList.toggle("hidden", !hasAudio);
+  document.querySelector('.tab[data-tab="subtitle"]').classList.toggle("hidden", !hasSubtitles);
+  const visibleCount = tabButtons.filter((btn) => !btn.classList.contains("hidden")).length;
+  tabsNav.classList.toggle("hidden", visibleCount <= 1);
+  setActiveTab("video");
+}
 
 const LOCAL_BASE = "http://127.0.0.1:8000";
 const COMPUTE_PREF_KEY = "useLocalCompute";
@@ -49,11 +88,10 @@ function setComputePreference(value) {
 
 function updateComputeStatusText() {
   const pref = getComputePreference();
-  if (pref === "yes") {
-    computeStatus.textContent = "Kompyuter kuchidan foydalanish: yoqilgan (o'zgartirish uchun bosing)";
-  } else {
-    computeStatus.textContent = "Kompyuter kuchidan foydalanish: o'chirilgan (o'zgartirish uchun bosing)";
-  }
+  computeStatus.classList.toggle("on", pref === "yes");
+  computeStatus.textContent = pref === "yes"
+    ? "Kompyuter kuchi: yoqilgan"
+    : "Kompyuter kuchi: o'chirilgan";
 }
 
 function openComputeModal() {
@@ -106,14 +144,79 @@ function clearError() {
 
 function formatDuration(sec) {
   if (!sec) return "";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  }
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 function setProgress(fillEl, percent, indeterminate) {
   fillEl.classList.toggle("indeterminate", !!indeterminate);
   fillEl.style.width = indeterminate ? "100%" : `${percent}%`;
+}
+
+// ---------------------------------------------------------------------------
+// Vaqt oralig'i (ikki dastakli slayder — faqat bir qismini yuklab olish)
+// ---------------------------------------------------------------------------
+
+const CLIP_MIN_GAP = 1; // soniya — dastaklar bir-birining ustiga chiqib ketmasin
+
+// Slayderdagi ikkita dastak bir-biridan kamida CLIP_MIN_GAP uzoqlikda turishini
+// ta'minlaydi, keyin yorliqlar/to'ldirilgan chiziq va bosish ustuvorligini yangilaydi.
+function clampClipThumbs(moved) {
+  const max = Number(clipRangeStart.max) || 0;
+  let start = Number(clipRangeStart.value);
+  let end = Number(clipRangeEnd.value);
+  if (moved === "start" && start > end - CLIP_MIN_GAP) {
+    start = Math.max(0, end - CLIP_MIN_GAP);
+    clipRangeStart.value = start;
+  } else if (moved === "end" && end < start + CLIP_MIN_GAP) {
+    end = Math.min(max, start + CLIP_MIN_GAP);
+    clipRangeEnd.value = end;
+  }
+  updateClipUI();
+}
+
+function updateClipUI() {
+  const max = Number(clipRangeStart.max) || 0;
+  const start = Number(clipRangeStart.value);
+  const end = Number(clipRangeEnd.value);
+
+  clipStartLabel.textContent = formatDuration(start);
+  clipEndLabel.textContent = formatDuration(end);
+
+  if (max > 0) {
+    clipSliderFill.style.left = `${(start / max) * 100}%`;
+    clipSliderFill.style.right = `${100 - (end / max) * 100}%`;
+  }
+
+  // Dastaklar bir-biriga yaqinlashganda "orqada" turgani ham bosilishi uchun —
+  // uzoqdagi yarimda turgan dastakka ustunlik beriladi.
+  if (max > 0 && start > max / 2) {
+    clipRangeStart.style.zIndex = 3;
+    clipRangeEnd.style.zIndex = 2;
+  } else {
+    clipRangeStart.style.zIndex = 2;
+    clipRangeEnd.style.zIndex = 3;
+  }
+}
+
+clipRangeStart.addEventListener("input", () => clampClipThumbs("start"));
+clipRangeEnd.addEventListener("input", () => clampClipThumbs("end"));
+
+// Dastaklar chetlarda (0 va butun davomiylik) qolsa {start_time: null,
+// end_time: null} (ya'ni butun video) qaytaradi — aks holda tanlangan oraliq.
+function readClipRange() {
+  const duration = currentInfo && Math.round(currentInfo.duration || 0);
+  if (!duration) return { start_time: null, end_time: null };
+  const start = Number(clipRangeStart.value);
+  const end = Number(clipRangeEnd.value);
+  if (start <= 0 && end >= duration) return { start_time: null, end_time: null };
+  return { start_time: start, end_time: end };
 }
 
 function updateVideoLangVisibility() {
@@ -181,14 +284,32 @@ function renderInfo(data) {
   fillLangSelect(separateLangSelect, data.audio_tracks);
 
   audioToggle.checked = data.audio_tracks.length > 0;
-  audioSection.classList.toggle("hidden", data.audio_tracks.length === 0);
-  separateSection.classList.toggle("hidden", data.audio_tracks.length === 0);
   updateVideoLangVisibility();
+
+  const subtitles = data.subtitles || [];
+  subtitleLangSelect.innerHTML = "";
+  subtitles.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = `${s.lang_code}::${s.auto ? 1 : 0}`;
+    opt.textContent = s.label;
+    subtitleLangSelect.appendChild(opt);
+  });
+  subtitleProgressWrap.classList.add("hidden");
+  subtitleFileLink.classList.add("hidden");
+
+  const duration = Math.max(1, Math.round(data.duration || 0));
+  clipRangeStart.max = duration;
+  clipRangeStart.value = 0;
+  clipRangeEnd.max = duration;
+  clipRangeEnd.value = duration;
+  updateClipUI();
 
   progressWrap.classList.add("hidden");
   fileLink.classList.add("hidden");
   separateProgressWrap.classList.add("hidden");
   separateLinks.classList.add("hidden");
+
+  updateTabsAvailability(data);
   videoCard.classList.remove("hidden");
 }
 
@@ -201,7 +322,7 @@ async function startDownload(body) {
   clearError();
   fileLink.classList.add("hidden");
   progressWrap.classList.remove("hidden");
-  setProgress(progressFill, 0, false);
+  setProgress(progressFill, 0, true);
   progressText.textContent = "Boshlanmoqda...";
   setButtonsDisabled(true);
 
@@ -230,6 +351,7 @@ downloadVideoBtn.addEventListener("click", () => {
     video_format_id: resolutionSelect.value,
     audio_format_id: wantAudio && currentInfo.audio_tracks.length ? videoLangSelect.value : null,
     title: currentInfo.title,
+    ...readClipRange(),
   });
 });
 
@@ -241,6 +363,7 @@ downloadAudioBtn.addEventListener("click", () => {
     video_format_id: null,
     audio_format_id: audioLangSelect.value,
     title: currentInfo.title,
+    ...readClipRange(),
   });
 });
 
@@ -263,6 +386,7 @@ separateBtn.addEventListener("click", async () => {
         audio_format_id: separateLangSelect.value,
         title: currentInfo.title,
         engine: separateEngineSelect.value,
+        ...readClipRange(),
       }),
     });
     const data = await res.json();
@@ -280,7 +404,10 @@ function pollSeparateProgress(jobId, base) {
     const data = await res.json();
     const pct = data.percent != null ? data.percent : 0;
 
-    if (data.status === "installing_ai") {
+    if (data.status === "queued") {
+      setProgress(separateProgressFill, 0, true);
+      separateProgressText.textContent = "Boshlanmoqda...";
+    } else if (data.status === "installing_ai") {
       const stageLabel = { torch: "PyTorch", demucs: "Demucs", separator: "UVR/audio-separator", compat: "moslashtirish" }[data.ai_stage] || "";
       setProgress(separateProgressFill, pct, false);
       separateProgressText.textContent = `AI komponentlari o'rnatilmoqda (${stageLabel}): ${pct}% — bu bir martalik jarayon, internetga bog'liq`;
@@ -307,16 +434,77 @@ function pollSeparateProgress(jobId, base) {
   }, 1200);
 }
 
+downloadSubtitleBtn.addEventListener("click", async () => {
+  if (!currentInfo || !subtitleLangSelect.value) return;
+  const [langCode, autoFlag] = subtitleLangSelect.value.split("::");
+  clearError();
+  subtitleFileLink.classList.add("hidden");
+  subtitleProgressWrap.classList.remove("hidden");
+  setProgress(subtitleProgressFill, 0, true);
+  subtitleProgressText.textContent = "Boshlanmoqda...";
+  downloadSubtitleBtn.disabled = true;
+
+  const base = await apiBase();
+  try {
+    const res = await fetch(`${base}/api/download/subtitle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: urlInput.value.trim(),
+        lang_code: langCode,
+        auto: autoFlag === "1",
+        title: currentInfo.title,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+    pollSubtitleProgress(data.job_id, base);
+  } catch (e) {
+    showError(e.message);
+    subtitleProgressWrap.classList.add("hidden");
+    downloadSubtitleBtn.disabled = false;
+  }
+});
+
+function pollSubtitleProgress(jobId, base) {
+  const interval = setInterval(async () => {
+    const res = await fetch(`${base}/api/progress/${jobId}`);
+    const data = await res.json();
+
+    if (data.status === "finished") {
+      clearInterval(interval);
+      setProgress(subtitleProgressFill, 100, false);
+      subtitleProgressText.textContent = "Tayyor!";
+      subtitleFileLink.href = `${base}/api/file/${jobId}`;
+      subtitleFileLink.classList.remove("hidden");
+      downloadSubtitleBtn.disabled = false;
+    } else if (data.status === "error") {
+      clearInterval(interval);
+      showError(data.error || "Subtitrni yuklab olishda xatolik yuz berdi");
+      subtitleProgressWrap.classList.add("hidden");
+      downloadSubtitleBtn.disabled = false;
+    }
+  }, 1000);
+}
+
 function pollProgress(jobId, base) {
   const interval = setInterval(async () => {
     const res = await fetch(`${base}/api/progress/${jobId}`);
     const data = await res.json();
 
-    if (data.status === "downloading") {
+    if (data.status === "queued") {
+      setProgress(progressFill, 0, true);
+      progressText.textContent = "Boshlanmoqda...";
+    } else if (data.status === "downloading") {
       const pct = data.percent != null ? data.percent : 0;
-      setProgress(progressFill, pct, false);
       const speed = data.speed ? `${(data.speed / 1024 / 1024).toFixed(2)} MB/s` : "";
-      progressText.textContent = `Yuklanmoqda: ${pct}% ${speed}`;
+      if (data.percent != null) {
+        setProgress(progressFill, pct, false);
+        progressText.textContent = `Yuklanmoqda: ${pct}% ${speed}`;
+      } else {
+        setProgress(progressFill, 0, true);
+        progressText.textContent = `Yuklanmoqda... ${speed}`;
+      }
     } else if (data.status === "merging") {
       setProgress(progressFill, 100, true);
       progressText.textContent = "Video va audio birlashtirilmoqda...";

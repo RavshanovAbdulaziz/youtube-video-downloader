@@ -18,9 +18,11 @@ from bot_ui import keyboards as kb
 from bot_ui import texts
 from bot_ui.callbacks import (
     DownloadAudioCB,
+    DownloadSubtitleCB,
     DownloadVideoCB,
     MenuBackCB,
     MenuSeparateCB,
+    MenuSubtitleCB,
     MenuVideoCB,
     PickLanguageCB,
     SeparateCB,
@@ -110,6 +112,7 @@ async def on_url(message: Message) -> None:
         thumbnail=info.get("thumbnail"),
         resolutions=info.get("resolutions", []),
         audio_tracks=info.get("audio_tracks", []),
+        subtitles=info.get("subtitles", []),
     )
     ctx = store.get(token)
 
@@ -173,6 +176,20 @@ async def on_set_language(callback: CallbackQuery, callback_data: SetLanguageCB)
         ctx.audio_index = callback_data.index
     await callback.answer("✅ Til o'zgartirildi")
     await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+
+
+@router.callback_query(MenuSubtitleCB.filter())
+async def on_menu_subtitle(callback: CallbackQuery, callback_data: MenuSubtitleCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    await _edit_card(
+        callback.message,
+        texts.subtitle_submenu_caption(ctx),
+        kb.subtitle_menu(callback_data.token, ctx.subtitles),
+    )
 
 
 @router.callback_query(MenuBackCB.filter())
@@ -354,6 +371,27 @@ async def on_download_audio(callback: CallbackQuery, callback_data: DownloadAudi
         return
     await callback.answer()
     job_id = downloader.start_download(ctx.url, None, ctx.audio_format_id, True, ctx.title)
+    await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
+    status = await callback.message.answer(texts.starting_caption(ctx))
+    asyncio.create_task(_poll_download(status, ctx, job_id, action_key))
+
+
+@router.callback_query(DownloadSubtitleCB.filter())
+async def on_download_subtitle(callback: CallbackQuery, callback_data: DownloadSubtitleCB) -> None:
+    ctx = _ctx_or_none(callback_data.token)
+    if not ctx:
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    if not (0 <= callback_data.index < len(ctx.subtitles)):
+        await callback.answer(texts.EXPIRED_ALERT, show_alert=True)
+        return
+    sub = ctx.subtitles[callback_data.index]
+    action_key = f"st:{sub['lang_code']}:{int(sub['auto'])}"
+    if not ctx.try_start(action_key):
+        await callback.answer(texts.BUSY_ALERT, show_alert=True)
+        return
+    await callback.answer()
+    job_id = downloader.start_subtitle_download(ctx.url, sub["lang_code"], sub["auto"], ctx.title)
     await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
     status = await callback.message.answer(texts.starting_caption(ctx))
     asyncio.create_task(_poll_download(status, ctx, job_id, action_key))

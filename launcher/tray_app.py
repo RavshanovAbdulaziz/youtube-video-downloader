@@ -29,9 +29,21 @@ import webbrowser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# Windowed (konsolsiz) PyInstaller build'da sys.stdout/stderr None bo'ladi —
+# uvicorn kabi kutubxonalar (masalan .isatty() chaqirib) shunga tayanadi va
+# aks holda shu yerda kutilmagan AttributeError bilan qulaydi.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 LAUNCHER_DIR = Path(__file__).resolve().parent
-REPO_ROOT = LAUNCHER_DIR.parent
-BACKEND_DIR = REPO_ROOT / "backend"
+# Paketlangan (PyInstaller) qurilmada `__file__` bundle ichidagi (sintetik)
+# yo'lga ishora qiladi — .exe qaysi papkada joylashgani aniqlash uchun
+# `sys.executable` ishlatiladi. Manba koddan ishga tushirilganda ikkalasi
+# bir xil natija beradi (repo ildizi).
+REPO_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else LAUNCHER_DIR.parent
+BACKEND_DIR = LAUNCHER_DIR.parent / "backend"
 
 HOST = "127.0.0.1"
 PORT = 8000
@@ -110,7 +122,9 @@ class ServerManager:
             return
         import uvicorn
 
-        config = uvicorn.Config("main:app", host=self.host, port=self.port, log_level="warning")
+        config = uvicorn.Config(
+            "main:app", host=self.host, port=self.port, log_level="warning", log_config=None,
+        )
         self._server = uvicorn.Server(config)
 
         def run_logged() -> None:

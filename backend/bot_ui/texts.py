@@ -5,7 +5,8 @@ START_TEXT = (
     "YouTube havolasini shu yerga yuboring — men taklif qilaman:\n"
     "🎬 Video (istalgan sifatda)\n"
     "🎵 Faqat audio (mp3)\n"
-    "🎤 Ovozni ajratish (AI: nutq / fon)\n\n"
+    "🎤 Ovozni ajratish (AI: nutq / fon)\n"
+    "📝 Subtitr (matn, .srt)\n\n"
     "Yordam uchun: /help"
 )
 
@@ -73,6 +74,10 @@ def separate_submenu_caption(ctx) -> str:
 
 def language_submenu_caption(ctx) -> str:
     return card_header(ctx) + "\n\n🌐 Audio tilini tanlang:"
+
+
+def subtitle_submenu_caption(ctx) -> str:
+    return card_header(ctx) + "\n\n📝 Subtitr tilini tanlang:"
 
 
 def resolution_button_text(r: dict) -> str:

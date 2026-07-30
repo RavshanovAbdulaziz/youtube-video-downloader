@@ -9,7 +9,7 @@ class VideoContext:
 
     __slots__ = (
         "url", "title", "duration", "thumbnail",
-        "resolutions", "audio_tracks", "audio_index", "busy_actions", "created_at",
+        "resolutions", "audio_tracks", "subtitles", "audio_index", "busy_actions", "created_at",
     )
 
     def __init__(
@@ -20,6 +20,7 @@ class VideoContext:
         thumbnail: str | None,
         resolutions: list[dict],
         audio_tracks: list[dict],
+        subtitles: list[dict] | None = None,
     ) -> None:
         self.url = url
         self.title = title
@@ -27,6 +28,7 @@ class VideoContext:
         self.thumbnail = thumbnail
         self.resolutions = resolutions
         self.audio_tracks = audio_tracks
+        self.subtitles = subtitles or []
         self.audio_index = 0
         for i, track in enumerate(audio_tracks):
             if track.get("is_original"):

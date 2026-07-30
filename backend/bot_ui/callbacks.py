@@ -17,6 +17,15 @@ class PickLanguageCB(CallbackData, prefix="m_lang"):
     token: str
 
 
+class MenuSubtitleCB(CallbackData, prefix="m_sub"):
+    token: str
+
+
+class DownloadSubtitleCB(CallbackData, prefix="dsub"):
+    token: str
+    index: int
+
+
 class SetLanguageCB(CallbackData, prefix="setlang"):
     token: str
     index: int

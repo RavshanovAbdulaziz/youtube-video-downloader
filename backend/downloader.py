@@ -1,12 +1,15 @@
 import contextlib
+import math
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import uuid
 
 import yt_dlp
+from yt_dlp.networking.common import Request
 
 import paths
 import pot_server
@@ -88,6 +91,35 @@ def _lang_label(code: str, is_original: bool) -> str:
         return "Original audio"
     name = LANGUAGE_NAMES.get(code, code)
     return f"{name} (original)" if is_original else f"{name} (dubbed)"
+
+
+def _subtitle_label(code: str, auto: bool) -> str:
+    name = LANGUAGE_NAMES.get(code, code)
+    return f"{name} (avtomatik)" if auto else name
+
+
+def _build_subtitles(info: dict) -> list[dict]:
+    """Qo'lda yuklangan subtitrlar + avtomatik (ASR) subtitrlar ro'yxati.
+    Avtomatik subtitrlar YouTube'da yuzlab tilga tarjima qilingan bo'lishi
+    mumkin — ro'yxatni cheksiz shishirmaslik uchun faqat LANGUAGE_NAMES'da
+    tanilgan (keng tarqalgan) tillarni ko'rsatamiz. Qo'lda yuklangan
+    subtitrlar esa (muallif tomonidan qo'shilgan haqiqiy tarjimalar)
+    kodidan qat'i nazar har doim ko'rsatiladi."""
+    subs = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+
+    result = [
+        {"lang_code": code, "label": _subtitle_label(code, False), "auto": False}
+        for code, tracks in subs.items() if tracks
+    ]
+    seen = {s["lang_code"] for s in result}
+    for code, tracks in auto_subs.items():
+        if not tracks or code in seen or code not in LANGUAGE_NAMES:
+            continue
+        result.append({"lang_code": code, "label": _subtitle_label(code, True), "auto": True})
+
+    result.sort(key=lambda s: (s["auto"], s["label"]))
+    return result
 
 
 def _video_codec_rank(vcodec: str | None) -> int:
@@ -190,6 +222,7 @@ def get_info(url: str) -> dict:
         "duration": info.get("duration"),
         "resolutions": resolutions,
         "audio_tracks": audio_tracks,
+        "subtitles": _build_subtitles(info),
         "has_video_only_streams": bool(video_only),
     }
 
@@ -224,8 +257,258 @@ def _unique_path(directory: str, base: str, ext: str) -> str:
     return candidate
 
 
+FFMPEG_RANGE_MARGIN = 3_000_000  # bayt — bitrate taxminidagi noaniqlik uchun zaxira (sidx topilmasa)
+FFMPEG_RANGE_CHUNK = 8 * 1024 * 1024  # 8 MB — native so'rov o'lchami
+SIDX_PROBE_SIZE = 5 * 1024 * 1024  # ftyp+moov+sidx odatda bundan ancha kichik
+
+
+def _select_format(info: dict, format_id: str) -> dict:
+    for f in info.get("formats", []):
+        if f.get("format_id") == format_id:
+            return f
+    raise RuntimeError(f"Format topilmadi: {format_id}")
+
+
+def _iter_top_boxes(data: bytes):
+    """(box_type, header_boshi, tarkib_boshi, tarkib_oxiri) larni beradi —
+    ISO-BMFF (MP4) faylining eng yuqori darajadagi box'lari bo'yicha."""
+    pos, n = 0, len(data)
+    while pos + 8 <= n:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        box_type = data[pos + 4:pos + 8]
+        header_len = 8
+        if size == 1:
+            if pos + 16 > n:
+                break
+            size = int.from_bytes(data[pos + 8:pos + 16], "big")
+            header_len = 16
+        elif size == 0:
+            size = n - pos
+        if size < header_len or pos + size > n:
+            break
+        yield box_type, pos, pos + header_len, pos + size
+        pos += size
+
+
+def _parse_sidx(content: bytes) -> tuple[int, list[tuple[int, int]]] | None:
+    """`sidx` (segment index) box tarkibidan (timescale, [(davomiylik, bayt
+    hajmi), ...]) segmentlar ro'yxatini o'qiydi. Kutilmagan tuzilma (masalan
+    ichma-ich sidx'ga ishora) uchraса — xavfsizlik uchun None qaytaradi."""
+    if len(content) < 12:
+        return None
+    version = content[0]
+    pos = 8  # version(1)+flags(3) + reference_ID(4)
+    timescale = int.from_bytes(content[pos:pos + 4], "big"); pos += 4
+    pos += 8 if version == 0 else 16  # earliest_presentation_time + first_offset
+    pos += 2  # reserved
+    if pos + 2 > len(content):
+        return None
+    ref_count = int.from_bytes(content[pos:pos + 2], "big"); pos += 2
+    segments = []
+    for _ in range(ref_count):
+        if pos + 12 > len(content):
+            return None
+        chunk = int.from_bytes(content[pos:pos + 4], "big"); pos += 4
+        if chunk >> 31:  # reference_type=1 -> ichma-ich sidx'ga ishora, qo'llab-quvvatlanmaydi
+            return None
+        referenced_size = chunk & 0x7FFFFFFF
+        duration = int.from_bytes(content[pos:pos + 4], "big"); pos += 4
+        pos += 4  # SAP ma'lumoti
+        segments.append((duration, referenced_size))
+    return timescale, segments
+
+
+def _sidx_plan(ydl, fmt: dict, start_time: float, end_time: float | None) -> dict | None:
+    """Format uchun `sidx` box asosida ANIQ bayt rejasini tuzadi — YouTube'ning
+    fragmentlangan MP4 formatlarida (moov'dan keyin sidx bo'ladi) har bir
+    segmentning bayt/vaqt joylashuvini bildiradi, shu orqali `start_time`ga ham
+    to'g'ridan-to'g'ri "sakrash" mumkin bo'ladi (faqat `end_time`gacha emas).
+    Muvaffaqiyatsiz bo'lsa (sidx topilmadi/tushunarsiz) None — chaqiruvchi
+    xavfsiz "0-baytdan" usuliga tushishi kerak."""
+    url = fmt["url"]
+    headers = fmt.get("http_headers") or {}
+    req = Request(url, headers={**headers, "Range": f"bytes=0-{SIDX_PROBE_SIZE - 1}"})
+    probe = ydl.urlopen(req).read()
+
+    moov_end = sidx_range = None
+    for box_type, _start, cstart, cend in _iter_top_boxes(probe):
+        if box_type == b"moov":
+            moov_end = cend
+        elif box_type == b"sidx":
+            sidx_range = (cstart, cend)
+        if moov_end is not None and sidx_range is not None:
+            break
+    if moov_end is None or sidx_range is None:
+        return None
+
+    parsed = _parse_sidx(probe[sidx_range[0]:sidx_range[1]])
+    if not parsed:
+        return None
+    timescale, segments = parsed
+    if not timescale or not segments:
+        return None
+
+    seg_start_byte = sidx_range[1]  # sidx tugagan joy — birinchi segment shu yerda boshlanadi
+    cur_byte, cur_time = seg_start_byte, 0.0
+    byte_start, byte_end = seg_start_byte, None
+    for duration, size in segments:
+        seg_time = duration / timescale
+        if cur_time + seg_time <= start_time:
+            byte_start = cur_byte + size
+        cur_byte += size
+        cur_time += seg_time
+        if end_time is not None and byte_end is None and cur_time >= end_time:
+            byte_end = cur_byte
+    if end_time is not None and byte_end is None:
+        byte_end = cur_byte
+
+    return {"header": probe[:moov_end], "byte_start": byte_start, "byte_end": byte_end}
+
+
+def _fetch_range(ydl, fmt: dict, byte_start: int, byte_end: int | None, out, on_bytes) -> None:
+    """`byte_start`dan (`byte_end` berilmagan bo'lsa — fayl oxirigacha) `out`
+    (ochiq fayl) ga yt-dlp'ning o'z (autentifikatsiyalangan) HTTP mijozi bilan,
+    kichik Range so'rovlarida yozib oladi. Buni ffmpeg'ga topshirish (yt-dlp'ning
+    odatiy `download_ranges` mexanizmi) YouTube CDN tomonidan qattiq
+    sekinlashtiriladi — ffmpeg bitta uzluksiz so'rov yuboradi va CDN buni
+    "throttle" qiladi (kuzatilgan: bir xil bayt oralig'i 113 soniya o'rniga
+    0.17 soniyada tugadi). yt-dlp'ning oddiy to'liq yuklashi buni sezmaydi,
+    chunki u ham kichik bo'laklarga bo'lib so'raydi — shu bo'lish naqshini
+    shu yerda qo'lda takrorlaymiz."""
+    url = fmt["url"]
+    headers = fmt.get("http_headers") or {}
+    pos = byte_start
+    while byte_end is None or pos < byte_end:
+        chunk_end = (min(pos + FFMPEG_RANGE_CHUNK, byte_end) - 1) if byte_end is not None \
+            else (pos + FFMPEG_RANGE_CHUNK - 1)
+        req = Request(url, headers={**headers, "Range": f"bytes={pos}-{chunk_end}"})
+        data = ydl.urlopen(req).read()
+        if not data:
+            break
+        out.write(data)
+        pos += len(data)
+        on_bytes(len(data))
+        if byte_end is None and len(data) < FFMPEG_RANGE_CHUNK:
+            break  # server so'ralgandan kamroq qaytardi — fayl shu yerda tugadi
+
+
+def _run_ffmpeg(args: list[str]) -> None:
+    ffmpeg_dir = paths.bundled_ffmpeg_dir()
+    exe = os.path.join(ffmpeg_dir, "ffmpeg.exe") if ffmpeg_dir else "ffmpeg"
+    result = subprocess.run([exe, *args], capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg xatosi: {result.stderr.decode(errors='ignore')[-800:]}")
+
+
+def _download_clip(job_id: str, url: str, video_format_id: str | None, audio_format_id: str | None,
+                    audio_only: bool, start_time: float, end_time: float | None) -> str:
+    """start_time/end_time berilganda ishlatiladi — yuqoridagi `_fetch_range`
+    izohiga qarang. Har bir kerakli oqim uchun avval `sidx`-asosli ANIQ bayt
+    rejasi sinaladi (topilsa — `start_time`ga ham to'g'ridan-to'g'ri "sakraladi",
+    videoning istalgan joyidagi klip uchun bir xil tezlikda ishlaydi); topilmasa
+    — 0-baytdan taxminiy oxirgi baytgacha (yoki to'liq) yuklashga tushiladi.
+    Aniq kesish va birlashtirish MAHALLIY (tarmoqsiz, bir zumda) ffmpeg bilan
+    bajariladi — katta `-analyzeduration`/`-probesize` va `-seek_timestamp 1`
+    kerak, chunki bu fayllar odatiy to'liq indeksga ega emas (faqat kerakli
+    segment saqlangan)."""
+    with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            duration = info.get("duration") or 0
+
+            needed_ids = [fid for fid in (video_format_id, audio_format_id) if fid]
+            plans: dict[str, dict] = {}
+            total_expected = 0
+            for fid in needed_ids:
+                fmt = _select_format(info, fid)
+                sidx = None
+                if start_time > 1:  # boshlanish deyarli 0 bo'lsa, sidx qidirish foyda bermaydi
+                    try:
+                        sidx = _sidx_plan(ydl, fmt, start_time, end_time)
+                    except Exception:
+                        sidx = None
+                if sidx:
+                    span = (sidx["byte_end"] - sidx["byte_start"]) if sidx["byte_end"] is not None else None
+                    plans[fid] = {"fmt": fmt, "mode": "sidx", **sidx}
+                    total_expected += len(sidx["header"]) + (span or 0)
+                else:
+                    filesize = fmt.get("filesize") or fmt.get("filesize_approx")
+                    if end_time is not None and duration and filesize and end_time < duration * 0.97:
+                        byte_end = min(filesize, int(math.ceil(end_time / duration * filesize)) + FFMPEG_RANGE_MARGIN)
+                    else:
+                        byte_end = filesize  # None bo'lsa ham pastda to'liq yt-dlp yuklovchisiga tushadi
+                    plans[fid] = {"fmt": fmt, "mode": "prefix", "byte_end": byte_end}
+                    total_expected += byte_end or 0
+
+            tmp_dir = tempfile.mkdtemp(prefix=f"{job_id}_clip_")
+            bytes_so_far = 0
+
+            def on_bytes(n: int) -> None:
+                nonlocal bytes_so_far
+                bytes_so_far += n
+                pct = round(bytes_so_far / total_expected * 100, 1) if total_expected else 0
+                with jobs_lock:
+                    jobs[job_id]["status"] = "downloading"
+                    jobs[job_id]["percent"] = min(pct, 99.0)
+
+            try:
+                fetched_paths: dict[str, str] = {}
+                for fid, plan in plans.items():
+                    fmt = plan["fmt"]
+                    dest = os.path.join(tmp_dir, f"{fid}.{fmt.get('ext', 'bin')}")
+                    if plan["mode"] == "sidx":
+                        with open(dest, "wb") as out:
+                            out.write(plan["header"])
+                            on_bytes(len(plan["header"]))
+                            _fetch_range(ydl, fmt, plan["byte_start"], plan["byte_end"], out, on_bytes)
+                    elif plan["byte_end"] is None:
+                        # Filesize noma'lum — yt-dlp'ning odatiy (throttle
+                        # qilinmaydigan) to'liq yuklovchisiga tayanamiz.
+                        single_opts = {"format": fid, "outtmpl": dest, "quiet": True, "no_warnings": True}
+                        with ydl_opts_ctx(single_opts) as sopts, yt_dlp.YoutubeDL(sopts) as sydl:
+                            sydl.download([url])
+                    else:
+                        with open(dest, "wb") as out:
+                            _fetch_range(ydl, fmt, 0, plan["byte_end"], out, on_bytes)
+                    fetched_paths[fid] = dest
+
+                with jobs_lock:
+                    jobs[job_id]["status"] = "merging"
+
+                clip_duration = (end_time - start_time) if end_time is not None else None
+                # Bu fayllar (ayniqsa "sidx" rejimida) to'liq/odatiy indeksga
+                # ega emas — katta analyzeduration/probesize va PTS-asosli
+                # (bayt taxminiga emas) seek majburlanmasa, ffmpeg noto'g'ri
+                # joydan kesadi yoki bo'sh natija beradi.
+                trim_args = [
+                    "-analyzeduration", "200M", "-probesize", "200M", "-seek_timestamp", "1",
+                    "-ss", str(start_time),
+                ] + (["-t", str(clip_duration)] if clip_duration else [])
+                out_ext = "mp3" if audio_only else "mp4"
+                out_path = os.path.join(DOWNLOADS_DIR, f"{job_id}.{out_ext}")
+
+                if audio_only:
+                    args = [*trim_args, "-i", fetched_paths[audio_format_id],
+                            "-codec:a", "libmp3lame", "-q:a", "2", "-y", out_path]
+                elif video_format_id and audio_format_id:
+                    args = [*trim_args, "-i", fetched_paths[video_format_id],
+                            *trim_args, "-i", fetched_paths[audio_format_id],
+                            "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+                            "-movflags", "+faststart", "-y", out_path]
+                else:
+                    src_id = video_format_id or audio_format_id
+                    args = [*trim_args, "-i", fetched_paths[src_id],
+                            "-c", "copy", "-movflags", "+faststart", "-y", out_path]
+
+                _run_ffmpeg(args)
+                return out_path
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def start_download(url: str, video_format_id: str | None, audio_format_id: str | None,
-                    audio_only: bool, title: str | None = None) -> str:
+                    audio_only: bool, title: str | None = None,
+                    start_time: float | None = None, end_time: float | None = None) -> str:
     job_id = uuid.uuid4().hex
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "percent": 0}
@@ -261,11 +544,71 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
 
     def run():
         try:
+            if start_time is not None or end_time is not None:
+                # `download_ranges` (ffmpeg orqali tarmoqdan vaqt-asosli seek)
+                # ISHLATILMAYDI — YouTube CDN uni qattiq sekinlashtiradi
+                # (_fetch_prefix izohiga qarang). Buning o'rniga native
+                # tezkor qisman/to'liq yuklash + mahalliy kesish.
+                final_path = _download_clip(
+                    job_id, url, video_format_id, audio_format_id, audio_only, start_time or 0, end_time,
+                )
+                if title:
+                    ext = os.path.splitext(final_path)[1]
+                    desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
+                    os.replace(final_path, desired_path)
+                    final_path = desired_path
+            else:
+                with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+                raw_path = _find_output_file(job_id)
+                final_path = raw_path
+                if raw_path and title:
+                    ext = os.path.splitext(raw_path)[1]
+                    desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
+                    os.replace(raw_path, desired_path)
+                    final_path = desired_path
+            with jobs_lock:
+                jobs[job_id]["status"] = "finished"
+                jobs[job_id]["percent"] = 100
+                jobs[job_id]["file"] = final_path
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id]["status"] = "error"
+                jobs[job_id]["error"] = str(e)
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
+def start_subtitle_download(url: str, lang_code: str, auto: bool, title: str | None = None) -> str:
+    job_id = uuid.uuid4().hex
+    with jobs_lock:
+        jobs[job_id] = {"status": "queued", "percent": 0}
+
+    outtmpl = os.path.join(DOWNLOADS_DIR, f"{job_id}.%(ext)s")
+    base_opts = {
+        "outtmpl": outtmpl,
+        "skip_download": True,
+        "writesubtitles": not auto,
+        "writeautomaticsub": auto,
+        "subtitleslangs": [lang_code],
+        "quiet": True,
+        "no_warnings": True,
+        # YouTube (va ko'pchilik saytlar) subtitrni vtt/ttml/json3 kabi
+        # formatlarda beradi — srt'ga ffmpeg orqali aylantiramiz, chunki
+        # u eng keng qo'llab-quvvatlanadigan format.
+        "postprocessors": [{"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}],
+    }
+
+    def run():
+        try:
             with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             raw_path = _find_output_file(job_id)
+            if not raw_path:
+                raise RuntimeError("Bu til uchun subtitr topilmadi")
             final_path = raw_path
-            if raw_path and title:
+            if title:
                 ext = os.path.splitext(raw_path)[1]
                 desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
                 os.replace(raw_path, desired_path)

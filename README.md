@@ -19,6 +19,22 @@ sekinroq).
 
 Shu fayllardan boshqa hech narsa qo'lda qilish shart emas.
 
+## `.exe` sifatida qurish (tray ilova)
+
+Python o'rnatilmagan boshqa kompyuterda ham ishlaydigan yagona `.exe` fayl
+kerak bo'lsa:
+
+1. **`build_exe.bat`** faylini ikki marta bosing (ffmpeg tizimda o'rnatilgan
+   bo'lishi kerak — natijaviy `.exe` uni o'z ichiga oladi).
+2. Natija: `dist/YouTubeDownloader/YouTubeDownloader.exe` — shu papkani
+   (butunligicha) istalgan joyga ko'chirib ishlatish mumkin.
+3. Ishga tushirilganda konsol oynasi ochilmaydi — dastur tizim tray'ida
+   (soat yonidagi strelka ostida) ikonka sifatida ishlaydi va brauzer
+   avtomatik ochiladi. Tray ikonkasiga sichqonchaning o'ng tugmasi bilan
+   bosib: serverni to'xtatish/qayta ishga tushirish, Yuklamalar papkasini
+   ochish, Telegram bot tokenini sozlash yoki dasturdan butunlay chiqish
+   mumkin.
+
 ## Talablar
 
 - Python 3.10+

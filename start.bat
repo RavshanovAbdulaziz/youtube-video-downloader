@@ -3,9 +3,9 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0backend"
 
-python -c "import fastapi" >nul 2>&1
+py -3.14 -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
-    echo Kerakli kutubxonalar topilmadi.
+    echo Kerakli kutubxonalar topilmadi yoki Python 3.14 o'rnatilmagan.
     echo Avval setup.bat faylini ishga tushiring.
     echo.
     pause
@@ -22,7 +22,7 @@ echo.
 
 start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8000'"
 
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+py -3.14 -m uvicorn main:app --host 127.0.0.1 --port 8000
 
 echo.
 echo Server to'xtatildi.

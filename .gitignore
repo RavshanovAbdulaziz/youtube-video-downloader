@@ -24,3 +24,8 @@ backend/logs/
 /*.mp3
 /*.webm
 /*.mkv
+
+# PyInstaller .exe qurish natijalari (build_exe.bat) — og'ir (ffmpeg ~200MB x2)
+# va qayta-quriladigan, shuning uchun repo'ga kiritilmaydi.
+/build/
+/dist/

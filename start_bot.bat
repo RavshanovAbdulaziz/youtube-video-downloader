@@ -3,10 +3,10 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0backend"
 
-python -c "import aiogram" >nul 2>&1
+py -3.14 -c "import aiogram" >nul 2>&1
 if errorlevel 1 (
     echo Kerakli kutubxona topilmadi: aiogram
-    echo O'rnatish uchun: pip install aiogram
+    echo O'rnatish uchun: py -3.14 -m pip install aiogram
     pause
     exit /b 1
 )
@@ -32,7 +32,7 @@ echo ============================================
 echo   Telegram bot ishga tushirilmoqda...
 echo   ^(to'xtatish uchun bu oynani yoping^)
 echo ============================================
-python bot.py
+py -3.14 bot.py
 
 echo.
 echo Bot to'xtatildi.

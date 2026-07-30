@@ -67,13 +67,19 @@ def ensure_running() -> str | None:
                 return BASE_URL
             node_exe = paths.bundled_node_exe() or "node"
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            _process = subprocess.Popen(
-                [node_exe, main_js, "--port", str(PORT)],
-                cwd=server_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+            try:
+                _process = subprocess.Popen(
+                    [node_exe, main_js, "--port", str(PORT)],
+                    cwd=server_dir,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+            except OSError:
+                # node_exe topilmadi (masalan, paketlangan qurilmada Node
+                # bundle qilinmagan, tizimda ham o'rnatilmagan) — PO token
+                # ixtiyoriy, shuning uchun shu yerda yutib, None qaytaramiz.
+                return None
             atexit.register(_stop)
 
     for _ in range(40):  # ~4s gacha startup kutamiz

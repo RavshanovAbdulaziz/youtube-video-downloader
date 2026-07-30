@@ -13,16 +13,16 @@ echo.
 
 if /i "%GPU_CHOICE%"=="y" (
     echo [1/4] PyTorch CUDA/GPU versiyasi o'rnatilmoqda...
-    python -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    py -3.14 -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ) else (
     echo [1/4] PyTorch CPU versiyasi o'rnatilmoqda...
-    python -m pip install torch torchvision torchaudio
+    py -3.14 -m pip install torch torchvision torchaudio
 )
 if errorlevel 1 goto :fail
 
 echo.
 echo [2/4] Demucs o'rnatilmoqda...
-python -m pip install demucs
+py -3.14 -m pip install demucs
 if errorlevel 1 goto :fail
 
 echo.
@@ -30,17 +30,17 @@ echo [3/4] audio-separator o'rnatilmoqda (Windows uchun maxsus usul bilan,
 echo       chunki "diffq-fixed" bog'liqligi yangi Python versiyalarida
 echo       qurilmaydi va uni chetlab o'tamiz)...
 if /i "%GPU_CHOICE%"=="y" (
-    python -m pip install audio-separator[gpu] --no-deps
+    py -3.14 -m pip install audio-separator[gpu] --no-deps
 ) else (
-    python -m pip install audio-separator --no-deps
+    py -3.14 -m pip install audio-separator --no-deps
 )
-python -m pip install audioop-lts beartype einops julius librosa ml_collections numpy onnx-weekly onnx2torch-py313 onnxruntime-gpu pydub pyyaml requests resampy rotary-embedding-torch samplerate scipy six soundfile tqdm
+py -3.14 -m pip install audioop-lts beartype einops julius librosa ml_collections numpy onnx-weekly onnx2torch-py313 onnxruntime-gpu pydub pyyaml requests resampy rotary-embedding-torch samplerate scipy six soundfile tqdm
 if errorlevel 1 goto :fail
 
 echo.
 echo [4/4] Muvofiqlik tuzatishlari qo'llanilmoqda...
-python -m pip install --upgrade beartype
-python -m pip install "numpy<2.5"
+py -3.14 -m pip install --upgrade beartype
+py -3.14 -m pip install "numpy<2.5"
 if errorlevel 1 goto :fail
 
 echo.

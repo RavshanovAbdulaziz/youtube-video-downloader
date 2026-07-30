@@ -7,6 +7,7 @@ import threading
 import uuid
 
 import yt_dlp
+from yt_dlp.utils import download_range_func
 
 import ai_setup
 import paths
@@ -129,7 +130,8 @@ def _download_progress_hook(job_id: str):
 
 
 def start_separation(url: str, audio_format_id: str, title: str | None = None,
-                      engine: str = "demucs") -> str:
+                      engine: str = "demucs",
+                      start_time: float | None = None, end_time: float | None = None) -> str:
     if engine not in ENGINES:
         raise ValueError(f"Noma'lum dvigatel: {engine}")
 
@@ -160,6 +162,13 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
                 "no_warnings": True,
                 "progress_hooks": [_download_progress_hook(job_id)],
             }
+            if start_time is not None or end_time is not None:
+                # downloader.start_download'dagi izohga qarang: butun audioni
+                # yuklab olmasdan, faqat tanlangan oraliqni manba serveridan
+                # o'qiydi (tezroq, va AI ajratish ham kamroq vaqt oladi).
+                base_opts["download_ranges"] = download_range_func(
+                    None, [(start_time or 0, end_time if end_time is not None else float("inf"))]
+                )
             with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
 

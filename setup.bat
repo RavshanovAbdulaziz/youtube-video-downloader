@@ -8,10 +8,10 @@ echo   YouTube Downloader - O'rnatish
 echo ============================================
 echo.
 
-python --version >nul 2>&1
+py -3.14 --version >nul 2>&1
 if errorlevel 1 (
-    echo XATO: Python topilmadi.
-    echo Avval Python 3.10+ o'rnating: https://python.org
+    echo XATO: Python 3.14 topilmadi.
+    echo Avval Python 3.14 o'rnating: https://python.org
     pause
     exit /b 1
 )
@@ -27,7 +27,7 @@ if errorlevel 1 (
 echo [1/2] Asosiy kutubxonalar o'rnatilmoqda (fastapi, yt-dlp, demucs)...
 echo Bu bir necha daqiqa vaqt olishi mumkin.
 echo.
-python -m pip install -r requirements.txt
+py -3.14 -m pip install -r requirements.txt
 if errorlevel 1 (
     echo XATO: kutubxonalarni o'rnatishda muammo yuz berdi.
     pause

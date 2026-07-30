@@ -2,9 +2,11 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .callbacks import (
     DownloadAudioCB,
+    DownloadSubtitleCB,
     DownloadVideoCB,
     MenuBackCB,
     MenuSeparateCB,
+    MenuSubtitleCB,
     MenuVideoCB,
     PickLanguageCB,
     SeparateCB,
@@ -22,6 +24,8 @@ def main_menu(ctx, token: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🎤 Ovozni ajratish (AI)", callback_data=MenuSeparateCB(token=token).pack())])
         if len(ctx.audio_tracks) > 1:
             rows.append([InlineKeyboardButton(text="🌐 Audio tilini o'zgartirish", callback_data=PickLanguageCB(token=token).pack())])
+    if ctx.subtitles:
+        rows.append([InlineKeyboardButton(text="📝 Subtitr (matn)", callback_data=MenuSubtitleCB(token=token).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -57,6 +61,17 @@ def language_menu(token: str, audio_tracks: list[dict]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{mark}{track.get('label', track.get('lang_code', '?'))}",
             callback_data=SetLanguageCB(token=token, index=i).pack(),
+        )])
+    rows.append([InlineKeyboardButton(text=BACK_LABEL, callback_data=MenuBackCB(token=token).pack())])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def subtitle_menu(token: str, subtitles: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for i, sub in enumerate(subtitles[:30]):
+        rows.append([InlineKeyboardButton(
+            text=sub["label"],
+            callback_data=DownloadSubtitleCB(token=token, index=i).pack(),
         )])
     rows.append([InlineKeyboardButton(text=BACK_LABEL, callback_data=MenuBackCB(token=token).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)

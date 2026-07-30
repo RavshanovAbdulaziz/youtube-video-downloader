@@ -26,12 +26,13 @@
   </div>
 
   <main class="container">
-    <h1>
-      <svg class="icon icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33Z"/><path d="m9.75 15.02 5.75-3.27-5.75-3.27v6.54Z"/></svg>
-      YouTube Video Downloader
-    </h1>
-
-    <p id="compute-status" class="compute-status"></p>
+    <header class="app-header">
+      <div class="brand">
+        <svg class="icon icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33Z"/><path d="m9.75 15.02 5.75-3.27-5.75-3.27v6.54Z"/></svg>
+        <span>YouTube Downloader</span>
+      </div>
+      <p id="compute-status" class="compute-status"></p>
+    </header>
 
     <div class="input-row">
       <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
@@ -59,11 +60,44 @@
         </div>
       </div>
 
-      <div class="section">
-        <h3>
+      <div class="clip-section">
+        <div class="clip-section-header">
+          <span class="label-text">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Vaqt oralig'i (ixtiyoriy)
+          </span>
+          <span class="clip-range-readout"><span id="clip-start-label">0:00</span>&nbsp;–&nbsp;<span id="clip-end-label">0:00</span></span>
+        </div>
+        <div class="clip-slider">
+          <div class="clip-slider-track">
+            <div id="clip-slider-fill" class="clip-slider-fill"></div>
+          </div>
+          <input type="range" id="clip-range-start" class="clip-thumb" min="0" max="0" value="0" step="1" />
+          <input type="range" id="clip-range-end" class="clip-thumb" min="0" max="0" value="0" step="1" />
+        </div>
+        <p class="clip-hint">Dastaklarni suring. Ikkalasi ham chetda qolsa — butun video. Tanlangan oraliq quyidagi Video/Audio/AI ajratish tugmalariga qo'llanadi.</p>
+      </div>
+
+      <nav class="tabs" id="tabs">
+        <button class="tab" data-tab="video">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>
           Video
-        </h3>
+        </button>
+        <button class="tab" data-tab="audio">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          Audio
+        </button>
+        <button class="tab" data-tab="subtitle">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h10"/><path d="M7 13h6"/></svg>
+          Subtitr
+        </button>
+        <button class="tab" data-tab="separate">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          AI ajratish
+        </button>
+      </nav>
+
+      <div class="tab-panel" data-panel="video">
         <div class="options">
           <label>
             <span class="label-text"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg> Sifat (resolyutsiya)</span>
@@ -87,11 +121,7 @@
         </button>
       </div>
 
-      <div id="audio-section" class="section hidden">
-        <h3>
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-          Audio (alohida)
-        </h3>
+      <div class="tab-panel" data-panel="audio">
         <div class="options">
           <label>
             <span class="label-text"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/></svg> Til (audio trek)</span>
@@ -104,21 +134,42 @@
         </button>
       </div>
 
-      <div id="progress-wrap" class="progress-wrap hidden">
-        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-        <p id="progress-text" class="progress-text"></p>
+      <div class="tab-panel" data-panel="video audio">
+        <div id="progress-wrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+          <p id="progress-text" class="progress-text"></p>
+        </div>
+
+        <a id="file-link" class="hidden result-link" download>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>Faylni yuklab olish</span>
+        </a>
       </div>
 
-      <a id="file-link" class="hidden result-link" download>
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        <span>Faylni yuklab olish</span>
-      </a>
+      <div class="tab-panel" data-panel="subtitle">
+        <div class="options">
+          <label>
+            <span class="label-text"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/></svg> Til</span>
+            <select id="subtitle-lang-select"></select>
+          </label>
+        </div>
+        <button id="download-subtitle-btn" class="secondary">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Subtitrni yuklab olish (.srt)</span>
+        </button>
 
-      <div id="separate-section" class="section hidden">
-        <h3>
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-          Ovozni ajratish (nutq / fon)
-        </h3>
+        <div id="subtitle-progress-wrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="subtitle-progress-fill" class="progress-fill"></div></div>
+          <p id="subtitle-progress-text" class="progress-text"></p>
+        </div>
+
+        <a id="subtitle-file-link" class="hidden result-link" download>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>Subtitr faylni yuklab olish</span>
+        </a>
+      </div>
+
+      <div class="tab-panel" data-panel="separate">
         <p class="hint">Audio ikkiga ajratiladi: faqat odam gapi va faqat fon tovushlari (musiqa, effektlar). AI orqali ishlaydi, biroz vaqt olishi mumkin. Birinchi marta ishlatganda kerakli AI komponentlari (~2-3GB) avtomatik yuklab o'rnatiladi — internet talab qilinadi, keyingi safar tezroq ishlaydi.</p>
         <div class="options">
           <label>
