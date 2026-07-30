@@ -8,10 +8,10 @@ echo   YouTube Downloader — .exe qurish
 echo ============================================
 echo.
 
-python -c "import PyInstaller" >nul 2>&1
+py -3.14 -c "import PyInstaller" >nul 2>&1
 if errorlevel 1 (
     echo PyInstaller topilmadi. O'rnatilmoqda...
-    python -m pip install pyinstaller
+    py -3.14 -m pip install pyinstaller
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher\build_exe.ps1"

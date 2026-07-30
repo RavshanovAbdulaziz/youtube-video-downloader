@@ -30,7 +30,7 @@ hiddenimports = [
 
 # yt_dlp/uvicorn/aiogram/pydantic o'zining ko'p qismini dinamik (lazy) import
 # qiladi — oddiy statik tahlil buni ko'rmaydi, shuning uchun to'liq yig'ib olamiz.
-for pkg in ("yt_dlp", "uvicorn", "aiogram", "pydantic", "pydantic_core", "fastapi", "starlette", "pystray"):
+for pkg in ("yt_dlp", "uvicorn", "aiogram", "pydantic", "pydantic_core", "fastapi", "starlette", "pystray", "PIL"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
