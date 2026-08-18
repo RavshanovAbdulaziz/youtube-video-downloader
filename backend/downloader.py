@@ -4,11 +4,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import uuid
 
 import yt_dlp
+from yt_dlp.cookies import extract_cookies_from_browser
 from yt_dlp.networking.common import Request
 
 import paths
@@ -32,6 +35,141 @@ DOWNLOADS_DIR = paths.DOWNLOADS_DIR
 COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "") or paths.default_cookies_file() or ""
 POT_BASE_URL = os.environ.get("YTDLP_POT_BASE_URL", "")
 
+# Cookie'larni fayldan emas, BRAUZERDAN to'g'ridan-to'g'ri o'qish. Bu yagona
+# haqiqiy "avtomatik" usul: har safar brauzerdagi joriy cookie olinadi, ya'ni
+# YouTube ularni yangilaganda ham hech narsa qo'lda eksport qilinmaydi.
+# Format: "firefox", "chrome", "edge:Profile 1" va h.k.
+#
+# DIQQAT — Windows'da cheklov bor: Chrome 127+ (va uning asosidagi Edge,
+# Brave, Opera) cookie bazasini "App-Bound Encryption" bilan shifrlaydi va
+# yt-dlp uni ocha olmaydi ("Failed to decrypt with DPAPI",
+# https://github.com/yt-dlp/yt-dlp/issues/10927). Ya'ni bu sozlama amalda
+# faqat FIREFOX bilan ishonchli ishlaydi.
+#
+# Sozlama yoqilgani bilan brauzer o'qilmasligi mumkin (profil yo'q, brauzer
+# o'rnatilmagan, shifrlash ochilmadi). Bunday holat XATO EMAS: _browser_
+# cookies_usable() buni oldindan bir marta tekshiradi va ishlamasa, jim
+# ravishda cookie fayliga (u ham bo'lmasa — cookie'siz rejimga) qaytadi.
+COOKIES_FROM_BROWSER = (
+    os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "")
+    or (paths.read_config().get("cookies_from_browser") or "")
+).strip()
+
+# YouTube brauzerdan eksport qilingan hisob cookie'larini vaqti-vaqti bilan
+# "rotate" qiladi (xavfsizlik chorasi) — shundan keyin eksport fayli o'lik
+# bo'lib qoladi. yt-dlp buni har bir so'rovdan keyin o'zi sezadi va
+# ogohlantiradi; biz o'sha ogohlantirishni ushlab, faylni shu jarayon
+# davomida chetlab o'tamiz va foydalanuvchiga bir marta aniq xabar beramiz.
+# Aks holda dastur "jim" ravishda o'lik cookie yuboraverar edi va nima uchun
+# qayta eksport kerakligi umuman bilinmasdi.
+_COOKIES_INVALID_MARKER = "account cookies are no longer valid"
+_cookies_invalid = False
+_cookies_lock = threading.Lock()
+
+
+def _cookies_file_usable() -> bool:
+    return bool(COOKIES_FILE) and os.path.isfile(COOKIES_FILE) and not _cookies_invalid
+
+
+def _mark_cookies_invalid() -> None:
+    global _cookies_invalid
+    with _cookies_lock:
+        if _cookies_invalid:
+            return
+        _cookies_invalid = True
+    print(
+        f"DIQQAT: cookie fayli eskirgan, YouTube uni bekor qilgan:\n"
+        f"  {COOKIES_FILE}\n"
+        "  Yuklash cookie'siz davom etadi (ko'p hollarda bu yetarli).\n"
+        "  Yosh cheklovli yoki yopiq videolar uchun brauzerdan yangi cookie\n"
+        "  eksport qilib, shu papkaga qo'ying. Nomi muhim emas: eng yangi\n"
+        "  *cookies*.txt fayli avtomatik tanlanadi.",
+        file=sys.stderr,
+    )
+
+
+def _parse_cookies_from_browser(spec: str) -> tuple:
+    """yt-dlp'ning `cookiesfrombrowser` parametri uchun: "chrome:Profile 1" ->
+    ("chrome", "Profile 1", None, None)."""
+    browser, _, profile = spec.partition(":")
+    return (browser.strip().lower(), profile.strip() or None, None, None)
+
+
+_browser_probe_lock = threading.Lock()
+_browser_probe_done = False
+_browser_cookies_ok = False
+
+
+def _browser_cookies_usable() -> bool:
+    """Brauzerdan cookie o'qish sozlangan bo'lsa, u AMALDA ishlashini bir
+    marta tekshiradi; natija jarayon davomida eslab qolinadi.
+
+    Tekshiruv ataylab shu yerda bajariladi, yt-dlp ichida emas: agar
+    `cookiesfrombrowser` berilib, brauzer bazasi ochilmasa, yt-dlp BUTUN
+    yuklashni xato bilan to'xtatadi. Bu yerda esa muvaffaqiyatsizlik oddiy
+    "cookie yo'q" holatiga aylanadi va yuklash davom etaveradi — cookie
+    faqat yosh cheklovli/yopiq videolar uchun kerak, oddiy videolar ularsiz
+    ham yuklanadi.
+    """
+    global _browser_probe_done, _browser_cookies_ok
+    if not COOKIES_FROM_BROWSER:
+        return False
+    if _browser_probe_done:
+        return _browser_cookies_ok
+
+    with _browser_probe_lock:
+        if _browser_probe_done:
+            return _browser_cookies_ok
+        browser, profile, keyring, container = _parse_cookies_from_browser(COOKIES_FROM_BROWSER)
+        try:
+            jar = extract_cookies_from_browser(
+                browser, profile, _LOGGER, keyring=keyring, container=container,
+            )
+        except Exception as e:
+            reason = str(e).splitlines()[0] if str(e) else e.__class__.__name__
+            print(
+                f"DIQQAT: '{browser}' brauzeridan cookie o'qib bo'lmadi: {reason}\n"
+                "  Cookie fayli (yoki cookie'siz rejim) ishlatiladi.",
+                file=sys.stderr,
+            )
+        else:
+            _browser_cookies_ok = any("youtube.com" in (c.domain or "") for c in jar)
+            if not _browser_cookies_ok:
+                print(
+                    f"DIQQAT: '{browser}' brauzerida YouTube cookie'lari topilmadi.\n"
+                    "  Unda YouTube'ga bir marta kiring va dasturni qayta ishga tushiring.\n"
+                    "  Hozircha cookie fayli (yoki cookie'siz rejim) ishlatiladi.",
+                    file=sys.stderr,
+                )
+        _browser_probe_done = True
+    return _browser_cookies_ok
+
+
+class _YdlLogger:
+    """yt-dlp uchun logger — `no_warnings=True` bo'lganda ham ogohlantirishlar
+    loggerga baribir uzatiladi, cookie eskirganini aynan shu yerda ushlaymiz.
+    Xatolar avvalgidek stderr'ga chiqadi (va yt-dlp ularni `DownloadError`
+    sifatida ko'taradi, ya'ni job holati o'zgarmaydi)."""
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg, only_once=False):
+        # `only_once` — yt-dlp'ning cookies.py moduli loggerni aynan shu
+        # imzo bilan chaqiradi; parametrsiz qolsa, brauzerdan cookie o'qishda
+        # TypeError bo'lardi.
+        if _COOKIES_INVALID_MARKER in msg:
+            _mark_cookies_invalid()
+
+    def error(self, msg):
+        print(msg, file=sys.stderr)
+
+
+_LOGGER = _YdlLogger()
+
 
 @contextlib.contextmanager
 def ydl_opts_ctx(extra: dict):
@@ -41,7 +179,7 @@ def ydl_opts_ctx(extra: dict):
     yoki bir nechta parallel so'rov) bitta faylni bir vaqtda yozsa, u
     asta-sekin buzilib boradi. Asosiy fayl hech qachon o'zgarmaydi.
     """
-    opts = {"js_runtimes": {"node": {}}, **extra}
+    opts = {"js_runtimes": {"node": {}}, "logger": _LOGGER, **extra}
     pot_base_url = POT_BASE_URL or pot_server.ensure_running()
     if pot_base_url:
         opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [pot_base_url]}}
@@ -56,7 +194,11 @@ def ydl_opts_ctx(extra: dict):
     if node_exe:
         opts["js_runtimes"] = {"node": {"path": node_exe}}
     tmp_cookie = None
-    if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
+    if _browser_cookies_usable():
+        # Brauzerdan o'qilganda vaqtinchalik nusxa kerak emas — yt-dlp
+        # brauzer bazasiga hech narsa yozmaydi, va cookie har safar yangi.
+        opts["cookiesfrombrowser"] = _parse_cookies_from_browser(COOKIES_FROM_BROWSER)
+    elif _cookies_file_usable():
         fd, tmp_cookie = tempfile.mkstemp(suffix=".txt")
         os.close(fd)
         shutil.copyfile(COOKIES_FILE, tmp_cookie)
@@ -73,6 +215,83 @@ def ydl_opts_ctx(extra: dict):
 # job_id -> progress/state dict, shared across threads
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+
+# YouTube CDN yuklash o'rtasida ulanishni tez-tez uzadi. Odatda yt-dlp buni
+# sezmasdan hal qiladi: uzilgan joydan `Range` so'rovi bilan davom etadi.
+# Lekin ba'zan aynan o'sha "davom ettirish" so'roviga CDN 403 qaytaradi va
+# yuklash butunlay to'xtaydi:
+#
+#     ERROR: unable to download video data: HTTP Error 403: Forbidden
+#
+# yt-dlp bunda o'zi qayta urinmaydi, chunki 403 — "qat'iy" HTTP xatosi (403
+# odatda "ruxsat yo'q" degani, ya'ni qayta urinish befoyda).
+#
+# 2026-08-17 da o'lchanganlari (aqz-KE-bpKQ, ketma-ket o'nlab urinish):
+#   * Xato TASODIFIY. Ayni bir video/format/sozlama bilan urinishlarning bir
+#     qismi 100% tugadi, bir qismi 403 berdi.
+#   * Sababi cookies.txt EMAS, format tanlovi (faqat video / video+audio)
+#     EMAS, `http_chunk_size` (10M ham, 1M ham) ham EMAS — uchalasi ham
+#     alohida sinaldi va farq bermadi.
+#   * Xato ehtimoli fayl hajmiga qarab keskin oshadi: CDN ulanishni har
+#     ~10 MB'da uzadi, va har bir "davom ettirish" 403 olish uchun yangi
+#     imkoniyat. 360p/480p/audio muammosiz tugadi, 1080p60 (~245 MB) va
+#     2160p60 (~1.3 GB) esa muntazam yiqildi.
+#
+# MUHIM: shunchaki qayta urinish YETARLI EMAS. Yarim yuklangan `.part` fayli
+# joyida qolsa, yt-dlp o'sha joydan `Range` bilan davom ettirishga uringani
+# uchun CDN yana o'sha 403'ni qaytaradi — o'lchovda 11 tadan 11 urinish shu
+# tarzda yiqildi. Faqat noldan boshlangan yuklashning o'tish imkoniyati bor.
+# Shuning uchun har bir qayta urinishdan oldin shu job'ning tugallanmagan
+# `.part` fayllarini o'chiramiz. Tugagan oqimlar (masalan video tayyor bo'lib,
+# audio yiqilgan bo'lsa) `.part`siz saqlanadi va qayta yuklanmaydi.
+#
+# Bu muammoni butunlay YO'QOTMAYDI — imkoniyatni oshiradi xolos. Har bir
+# urinish noldan boshlanadi, shuning uchun urinishlar soni ataylab kichik:
+# yiqilgan katta faylni 5 marta qayta tortish trafikni behuda sarflaydi.
+DOWNLOAD_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 2
+
+
+def _discard_partials(job_id: str) -> None:
+    """Shu job'ning tugallanmagan `.part` fayllarini o'chiradi, keyingi
+    urinish noldan (va yangi URL bilan) boshlansin."""
+    for name in os.listdir(DOWNLOADS_DIR):
+        if name.startswith(job_id) and name.endswith(".part"):
+            try:
+                os.remove(os.path.join(DOWNLOADS_DIR, name))
+            except OSError:
+                pass
+
+# Vaqtinchalik (qayta urinishga arziydigan) xatolar. "Video unavailable",
+# "Private video" kabi doimiy sabablar bu ro'yxatga kirmaydi — ular darhol
+# foydalanuvchiga qaytadi.
+_TRANSIENT_ERROR_MARKERS = (
+    "403", "forbidden", "unable to download video data",
+    "connection", "timed out", "timeout", "incomplete",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+def _with_retries(job_id: str, action):
+    """`action`ni bajaradi; vaqtinchalik tarmoq xatosida qayta uriniladi."""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return action()
+        except Exception as e:
+            if attempt == DOWNLOAD_ATTEMPTS or not _is_transient(e):
+                raise
+            _discard_partials(job_id)
+            # Holatni "downloading"da qoldiramiz — frontend faqat ma'lum
+            # holatlarni biladi va qayta urinish foydalanuvchi uchun oddiy
+            # yuklashning davomi bo'lib ko'rinishi kerak.
+            with jobs_lock:
+                jobs.setdefault(job_id, {})["status"] = "downloading"
+                jobs[job_id]["percent"] = 0
+            time.sleep(RETRY_DELAY_SECONDS)
 
 LANGUAGE_NAMES = {
     "en": "English", "en-US": "English (US)", "en-GB": "English (UK)",
@@ -549,17 +768,20 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
                 # ISHLATILMAYDI — YouTube CDN uni qattiq sekinlashtiradi
                 # (_fetch_prefix izohiga qarang). Buning o'rniga native
                 # tezkor qisman/to'liq yuklash + mahalliy kesish.
-                final_path = _download_clip(
+                final_path = _with_retries(job_id, lambda: _download_clip(
                     job_id, url, video_format_id, audio_format_id, audio_only, start_time or 0, end_time,
-                )
+                ))
                 if title:
                     ext = os.path.splitext(final_path)[1]
                     desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
                     os.replace(final_path, desired_path)
                     final_path = desired_path
             else:
-                with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
+                def download_once():
+                    with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+
+                _with_retries(job_id, download_once)
                 raw_path = _find_output_file(job_id)
                 final_path = raw_path
                 if raw_path and title:
@@ -602,8 +824,11 @@ def start_subtitle_download(url: str, lang_code: str, auto: bool, title: str | N
 
     def run():
         try:
-            with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+            def download_once():
+                with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+
+            _with_retries(job_id, download_once)
             raw_path = _find_output_file(job_id)
             if not raw_path:
                 raise RuntimeError("Bu til uchun subtitr topilmadi")

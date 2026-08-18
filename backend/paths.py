@@ -42,6 +42,10 @@ _DEFAULT_CONFIG = {
     "gpu": None,  # None = not probed yet, True/False = cached nvidia-smi result
     "ai_installed": False,
     "first_run_done": False,
+    # Cookie'larni fayl o'rniga to'g'ridan-to'g'ri brauzerdan olish, masalan
+    # "firefox" yoki "chrome:Profile 1". None bo'lsa — cookie fayli ishlatiladi.
+    # Batafsil: downloader.COOKIES_FROM_BROWSER izohiga qarang.
+    "cookies_from_browser": None,
 }
 
 
@@ -114,14 +118,34 @@ def runtime_scripts_dir() -> str:
 
 
 def default_cookies_file() -> str | None:
-    """YTDLP_COOKIES_FILE aniq berilmagan bo'lsa ham, foydalanuvchi
-    `cookies.txt`ni odatiy joyga (backend papkasi yoki paketlangan
-    qurilmada ma'lumotlar papkasi) qo'yishi bilan avtomatik topiladi —
-    cookies.txt.example'da tasvirlangan oqim aynan shunday ishlashi kerak."""
-    for candidate in (os.path.join(_base_dir(), "cookies.txt"), os.path.join(_BACKEND_DIR, "cookies.txt")):
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+    """YTDLP_COOKIES_FILE aniq berilmagan bo'lsa ham, foydalanuvchi cookie
+    faylini odatiy joyga (backend papkasi yoki paketlangan qurilmada
+    ma'lumotlar papkasi) qo'yishi bilan avtomatik topiladi.
+
+    Fayl nomi QAT'IY EMAS: brauzer kengaytmalari eksport faylini har xil
+    nomlaydi — "cookies.txt", "www.youtube.com_cookies.txt" va h.k. Shuning
+    uchun `*cookies*.txt` naqshiga mos kelganlarning ichidan ENG YANGISI
+    (mtime bo'yicha) tanlanadi. Natijada qayta eksport qilingan fayl darhol
+    kuchga kiradi — eskisini o'chirish yoki nomini o'zgartirish shart emas.
+    """
+    directories = []
+    for directory in (_base_dir(), _BACKEND_DIR):
+        if directory not in directories and os.path.isdir(directory):
+            directories.append(directory)
+
+    candidates = []
+    for directory in directories:
+        for name in os.listdir(directory):
+            lowered = name.lower()
+            if not lowered.endswith(".txt") or "cookies" not in lowered:
+                continue
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                candidates.append(candidate)
+
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
 
 
 def bundled_bgutil_server_dir() -> str | None:
