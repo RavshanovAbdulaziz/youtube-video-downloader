@@ -1,9 +1,16 @@
 @echo off
 chcp 65001 >nul
 setlocal
-cd /d "%~dp0backend"
 
-py -3.14 -c "import fastapi" >nul 2>&1
+REM Dasturni TRAY rejimida ishga tushiradi: konsol oynasi ochilmaydi, o'rniga
+REM soat yonidagi (bildirishnomalar sohasi) kichik ikonka paydo bo'ladi.
+REM O'sha ikonkani sichqonchaning O'NG tugmasi bilan bosib: ochish, to'xtatish,
+REM qayta ishga tushirish, yuklamalar/loglar papkasi va chiqish mumkin.
+REM
+REM Kod ustida ishlayotgan bo'lsangiz start_dev.bat'ni ishlating — u konsolni
+REM ochiq qoldiradi va fayl o'zgarganda serverni avtomatik qayta yuklaydi.
+
+py -3.14 -c "import fastapi, pystray, PIL" >nul 2>&1
 if errorlevel 1 (
     echo Kerakli kutubxonalar topilmadi yoki Python 3.14 o'rnatilmagan.
     echo Avval setup.bat faylini ishga tushiring.
@@ -12,18 +19,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo ============================================
-echo   YouTube Downloader ishga tushirilmoqda...
-echo ============================================
-echo.
-echo Brauzer avtomatik ochiladi. To'xtatish uchun stop.bat'ni ishga tushiring
-echo (yoki shunchaki bu oynani yoping).
-echo.
+REM pythonw.exe — konsolsiz Python. `start ""` bilan chaqiramiz, shunda bu
+REM oyna darhol yopiladi va dastur fonda, tray'da ishlashda davom etadi.
+for /f "usebackq delims=" %%P in (`py -3.14 -c "import sys,os;print(os.path.join(os.path.dirname(sys.executable),'pythonw.exe'))"`) do set "PYW=%%P"
 
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8000'"
+if not exist "%PYW%" (
+    echo XATO: pythonw.exe topilmadi: %PYW%
+    pause
+    exit /b 1
+)
 
-py -3.14 -m uvicorn main:app --host 127.0.0.1 --port 8000
-
-echo.
-echo Server to'xtatildi.
-pause
+start "" "%PYW%" "%~dp0launcher\tray_app.py"
+exit /b 0

@@ -24,7 +24,7 @@ if errorlevel 1 (
     echo.
 )
 
-echo [1/2] Asosiy kutubxonalar o'rnatilmoqda (fastapi, yt-dlp, demucs)...
+echo [1/3] Asosiy kutubxonalar o'rnatilmoqda (fastapi, yt-dlp)...
 echo Bu bir necha daqiqa vaqt olishi mumkin.
 echo.
 py -3.14 -m pip install -r requirements.txt
@@ -35,8 +35,18 @@ if errorlevel 1 (
 )
 
 echo.
+echo [2/3] Tray (soat yonidagi ikonka) uchun kutubxonalar...
+echo.
+py -3.14 -m pip install -r "%~dp0launcher\requirements.txt"
+if errorlevel 1 (
+    echo XATO: tray kutubxonalarini o'rnatishda muammo yuz berdi.
+    echo start.bat ishlamasligi mumkin - start_dev.bat esa ishlayveradi.
+    pause
+)
+
+echo.
 echo ============================================
-echo   Ixtiyoriy: "Ovozni ajratish" (AI) funksiyasi
+echo   [3/3] Ixtiyoriy: "Ovozni ajratish" (AI) funksiyasi
 echo ============================================
 echo Bu funksiya audioni odam gapi va fon tovushlariga ajratadi.
 echo PyTorch + Demucs + audio-separator kerak (~3-5GB yuklab olish).
@@ -52,5 +62,11 @@ echo.
 echo ============================================
 echo   O'rnatish tugadi!
 echo ============================================
-echo Ishga tushirish uchun start.bat faylini oching.
+echo.
+echo   start.bat      - kundalik ishlatish uchun.
+echo                    Soat yonida (tray) ikonka paydo bo'ladi, o'ng tugma
+echo                    bilan bosib istalgan payt to'xtatish mumkin.
+echo.
+echo   start_dev.bat  - kod ustida ishlash uchun (konsol + auto-reload).
+echo.
 pause

@@ -215,6 +215,17 @@ def _build_icon_image(running: bool):
     return img
 
 
+def _tooltip(server: ServerManager, bot_mgr: BotManager) -> str:
+    """Sichqoncha tray ikonkasi ustiga kelganda ko'rinadigan matn — bir
+    qarashda nima ishlayotgani bilinib tursin."""
+    if not server.running:
+        return "YouTube Downloader — to'xtatilgan"
+    text = f"YouTube Downloader — ishlayapti\n{server.host}:{server.port}"
+    if bot_mgr.running:
+        text += "\nTelegram bot: yoqilgan"
+    return text
+
+
 def _build_tray_icon(server: ServerManager, bot_mgr: BotManager, logger: logging.Logger):
     import pystray
 
@@ -222,6 +233,11 @@ def _build_tray_icon(server: ServerManager, bot_mgr: BotManager, logger: logging
         token = paths.read_config().get("bot_token")
         if token:
             bot_mgr.start(token)
+
+    def refresh(icon) -> None:
+        """Ikonka rangi va tooltip'ni joriy holatga moslaydi."""
+        icon.icon = _build_icon_image(server.running)
+        icon.title = _tooltip(server, bot_mgr)
 
     def on_open(icon, item) -> None:
         webbrowser.open(f"http://{server.host}:{server.port}")
@@ -235,13 +251,32 @@ def _build_tray_icon(server: ServerManager, bot_mgr: BotManager, logger: logging
             logger.info("Server ishga tushirilmoqda (tray)")
             server.start()
             start_bot_if_configured()
-        icon.icon = _build_icon_image(server.running)
+        refresh(icon)
 
     def toggle_text(item) -> str:
         return "To'xtatish" if server.running else "Ishga tushirish"
 
+    def on_restart(icon, item) -> None:
+        """Kod o'zgartirilgandan keyin qayta ishga tushirish — dasturdan
+        butunlay chiqib, qaytadan ochish shart emas.
+
+        DIQQAT: uvicorn `main:app` modulini bir marta import qiladi, shuning
+        uchun bu faqat SERVERNI qayta ko'taradi; Python modullari (masalan
+        `downloader.py`) xotirada eskisicha qoladi. Kod o'zgarishini ko'rish
+        uchun `start_dev.bat` (auto-reload) ishlating."""
+        logger.info("Qayta ishga tushirilmoqda (tray)")
+        server.stop()
+        bot_mgr.stop()
+        server.start()
+        start_bot_if_configured()
+        refresh(icon)
+
     def on_downloads(icon, item) -> None:
         os.startfile(paths.DOWNLOADS_DIR)
+
+    def on_logs(icon, item) -> None:
+        """Nosozlikni aniqlash uchun — xatolar shu faylga yoziladi."""
+        os.startfile(paths.LOGS_DIR)
 
     def on_settings(icon, item) -> None:
         cfg = paths.read_config()
@@ -251,6 +286,7 @@ def _build_tray_icon(server: ServerManager, bot_mgr: BotManager, logger: logging
             bot_mgr.stop()
         if token:
             bot_mgr.start(token)
+        refresh(icon)
 
     def on_exit(icon, item) -> None:
         logger.info("Chiqilmoqda (tray)")
@@ -261,11 +297,41 @@ def _build_tray_icon(server: ServerManager, bot_mgr: BotManager, logger: logging
     menu = pystray.Menu(
         pystray.MenuItem("Ochish (brauzerda)", on_open, default=True, enabled=lambda item: server.running),
         pystray.MenuItem(toggle_text, on_toggle),
-        pystray.MenuItem("Yuklamalar papkasini ochish", on_downloads),
+        pystray.MenuItem("Qayta ishga tushirish", on_restart, enabled=lambda item: server.running),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Yuklamalar papkasi", on_downloads),
+        pystray.MenuItem("Loglar papkasi", on_logs),
         pystray.MenuItem("Sozlamalar (bot token)...", on_settings),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Chiqish", on_exit),
     )
-    return pystray.Icon("youtube-downloader", _build_icon_image(server.running), "YouTube Downloader", menu)
+    return pystray.Icon(
+        "youtube-downloader", _build_icon_image(server.running), _tooltip(server, bot_mgr), menu
+    )
+
+
+def _check_tray_deps() -> str | None:
+    """Tray uchun kerakli kutubxonalar borligini OLDINDAN tekshiradi.
+
+    Aks holda server allaqachon ko'tarilgandan keyin `_build_tray_icon`
+    ichida `ModuleNotFoundError` bilan qulardi — foydalanuvchi esa faqat
+    tushunarsiz stack trace ko'rardi (log'da aynan shunday holat bor edi).
+    Xato o'rniga aniq, bajariladigan ko'rsatma qaytaramiz."""
+    missing = []
+    for module, package in (("pystray", "pystray"), ("PIL", "Pillow")):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+    if not missing:
+        return None
+    return (
+        "Tray (kichik ikonka) uchun kerakli kutubxona topilmadi: "
+        + ", ".join(missing)
+        + "\n\nO'rnatish uchun setup.bat faylini qayta ishga tushiring,\n"
+        "yoki quyidagi buyruqni bajaring:\n\n"
+        f"    py -3.14 -m pip install {' '.join(missing)}"
+    )
 
 
 def _run(logger: logging.Logger) -> None:
@@ -273,6 +339,14 @@ def _run(logger: logging.Logger) -> None:
         logger.info("Server allaqachon ishlayapti (%s:%s) — brauzer ochiladi.", HOST, PORT)
         webbrowser.open(f"http://{HOST}:{PORT}")
         return
+
+    dep_error = _check_tray_deps()
+    if dep_error:
+        # Serverni ko'tarishdan OLDIN to'xtaymiz — aks holda ikonkasiz,
+        # to'xtatib bo'lmaydigan "sarson" server qolib ketardi.
+        logger.error(dep_error)
+        _show_fatal_error(dep_error)
+        sys.exit(1)
 
     cfg = paths.read_config()
     if not cfg.get("first_run_done"):

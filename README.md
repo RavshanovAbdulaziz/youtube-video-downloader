@@ -12,12 +12,36 @@ sekinroq).
 
 1. **`setup.bat`** faylini ikki marta bosing — kerakli kutubxonalarni
    o'rnatadi (birinchi marta ishlatishda, bir marta bajarish kifoya).
-2. **`start.bat`** faylini ikki marta bosing — server ishga tushadi va
-   brauzer avtomatik ochiladi.
-3. Ishni tugatgach, **`stop.bat`** faylini ikki marta bosing — server
-   to'xtatiladi (yoki shunchaki `start.bat` ochgan qora oynani yoping).
+2. **`start.bat`** faylini ikki marta bosing — brauzer avtomatik ochiladi,
+   va soat yonidagi **tray sohasida ikonka** paydo bo'ladi. Qora konsol
+   oynasi ochilmaydi.
+3. Ishni tugatish uchun **tray ikonkasiga o'ng tugma** bilan bosib
+   **"Chiqish"** ni tanlang.
 
-Shu fayllardan boshqa hech narsa qo'lda qilish shart emas.
+Ixtiyoriy: **`create_shortcut.bat`** — ish stoliga yorliq yaratadi, shunda
+loyiha papkasini har safar ochib o'tirish shart emas.
+
+### Tray ikonkasi menyusi
+
+Ikonka rangi holatni bildiradi: **qizil** — ishlayapti, **kulrang** —
+to'xtatilgan. O'ng tugma bilan bosilganda:
+
+| Menyu | Nima qiladi |
+|---|---|
+| Ochish (brauzerda) | Web UI'ni brauzerda ochadi |
+| To'xtatish / Ishga tushirish | Serverni to'xtatadi yoki qayta yoqadi (dasturdan chiqmasdan) |
+| Qayta ishga tushirish | Serverni to'xtatib, darhol qayta ko'taradi |
+| Yuklamalar papkasi | Yuklab olingan fayllar papkasini ochadi |
+| Loglar papkasi | Xato izlari yoziladigan papka (nosozlik qidirganda kerak) |
+| Sozlamalar (bot token) | Telegram bot tokenini kiritish/o'zgartirish |
+| Chiqish | Serverni ham, botni ham to'xtatib, dasturdan butunlay chiqadi |
+
+Tray ikonkasi ko'rinmasa, u Windows'ning "yashirilgan ikonkalar" (`^`
+strelka) ostida bo'lishi mumkin — uni strelkadan tortib chiqarib, doimiy
+ko'rinadigan qilib qo'yish mumkin.
+
+`stop.bat` ham ishlayveradi (zaxira usul) — u portni band qilgan jarayonni
+majburan to'xtatadi.
 
 ## `.exe` sifatida qurish (tray ilova)
 
@@ -69,6 +93,24 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 Brauzerda oching: http://127.0.0.1:8000
+
+## Kod ustida ishlash (development)
+
+Kundalik ishlatish uchun `start.bat` (tray, konsolsiz) qulay, lekin kod
+o'zgartirganda har safar tray'dan "Qayta ishga tushirish"ni bosish o'rniga
+**`start_dev.bat`**ni ishlating:
+
+- konsol oynasi ochiq qoladi — xatolar/loglar darhol ko'rinadi
+- `.py` fayl saqlanganda server **o'zi qayta yuklanadi** (`--reload`)
+- to'xtatish: shu oynada `Ctrl+C`
+
+Testlar (`backend/tests/`, tarmoqqa chiqmaydi, ~5 soniyada tugaydi):
+
+```bash
+cd backend
+py -3.14 -m pip install pytest pytest-asyncio httpx   # bir martalik
+py -3.14 -m pytest
+```
 
 ## Qanday ishlaydi
 
@@ -224,15 +266,20 @@ bo'lsangiz:
 
 ```
 you tube video downloander/
-├── start.bat            # Serverni ishga tushirish (bosish bilan)
-├── start_bot.bat        # Telegram botni shu kompyuterda ishga tushirish
-├── stop.bat             # Serverni to'xtatish (bosish bilan)
+├── start.bat            # Kundalik ishlatish: tray rejimida ishga tushirish
+├── start_dev.bat        # Kod ustida ishlash: konsol + auto-reload
+├── create_shortcut.bat  # Ish stoliga "YouTube Downloader" yorlig'i yaratadi
+├── start_bot.bat        # Telegram botni shu kompyuterda alohida ishga tushirish
+├── stop.bat             # Serverni to'xtatish (tray ikonkasi ishlamasa, zaxira)
 ├── stop.ps1             # stop.bat ichida ishlatiladigan PowerShell skripti
 ├── setup.bat            # Birinchi marta o'rnatish (bosish bilan)
 ├── install_ai.bat       # "Ovozni ajratish" (AI) qo'shimcha o'rnatish
 ├── Dockerfile           # Serverga (Linux/ARM) joylashtirish uchun image
 ├── docker-compose.yml   # api + bot xizmatlari
 ├── .env.example         # BOT_TOKEN va boshqa muhit o'zgaruvchilari namunasi
+├── launcher/
+│   ├── tray_app.py         # Tray ikonkasi, server/bot jarayonlarini boshqaradi
+│   └── token_dialog.py     # Birinchi ishga tushirishda bot token so'raydi
 ├── backend/
 │   ├── main.py             # FastAPI endpointlari
 │   ├── downloader.py       # yt-dlp bilan video/audio yuklab olish logikasi
@@ -240,6 +287,7 @@ you tube video downloander/
 │   ├── bot.py               # Telegram bot (aiogram)
 │   ├── requirements.txt     # Asosiy kutubxonalar
 │   ├── requirements-ai.txt  # AI (Demucs/UVR) kutubxonalari — Linux/Docker uchun
+│   ├── tests/               # pytest test to'plami (`py -3.14 -m pytest`)
 │   └── downloads/          # Yuklab olingan fayllar vaqtincha shu yerda
 └── frontend/
     ├── index.html
