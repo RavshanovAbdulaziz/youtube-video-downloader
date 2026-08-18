@@ -180,9 +180,17 @@ def ydl_opts_ctx(extra: dict):
     asta-sekin buzilib boradi. Asosiy fayl hech qachon o'zgarmaydi.
     """
     opts = {"js_runtimes": {"node": {}}, "logger": _LOGGER, **extra}
+    # "web"/"web_safari" mijozlari cookie (login) bilan so'ralganda YouTube
+    # SABR streamingni majburlaydi va ko'pchilik DASH formatlarini (jumladan
+    # audio-only treklarni) URL'siz qoldiradi — natijada audio_tracks bo'sh
+    # chiqadi va segment (start/end) yuklab olish uchun kerakli byte-range
+    # so'rovlar ishlamay qoladi. "mweb" mijozi cookie bilan ham to'liq DASH
+    # formatlarni (audio-only va range-so'rovga chidamli URL'lar bilan)
+    # qaytaradi, shuning uchun uni aniq belgilaymiz.
+    opts["extractor_args"] = {"youtube": {"player_client": ["mweb"]}}
     pot_base_url = POT_BASE_URL or pot_server.ensure_running()
     if pot_base_url:
-        opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [pot_base_url]}}
+        opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
     # Paketlangan (plug-and-play) versiyada ffmpeg va Node.js tizim PATH'ida
     # emas, dastur bilan birga keladi — shu holatda ularning aniq yo'lini
     # ko'rsatamiz. Manba koddan ishga tushirilganda (APP_RUNTIME_DIR yo'q)
@@ -444,22 +452,6 @@ def get_info(url: str) -> dict:
         "subtitles": _build_subtitles(info),
         "has_video_only_streams": bool(video_only),
     }
-
-
-def _progress_hook(job_id: str):
-    def hook(d):
-        with jobs_lock:
-            job = jobs.setdefault(job_id, {})
-            if d["status"] == "downloading":
-                job["status"] = "downloading"
-                total = d.get("total_bytes") or d.get("total_bytes_estimate")
-                downloaded = d.get("downloaded_bytes") or 0
-                job["percent"] = round(downloaded / total * 100, 1) if total else None
-                job["speed"] = d.get("speed")
-                job["eta"] = d.get("eta")
-            elif d["status"] == "finished":
-                job["status"] = "merging"
-    return hook
 
 
 def _sanitize_filename(name: str, max_len: int = 150) -> str:
@@ -732,63 +724,28 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "percent": 0}
 
-    if audio_only:
-        fmt = audio_format_id
-    elif video_format_id and audio_format_id:
-        fmt = f"{video_format_id}+{audio_format_id}"
-    else:
-        fmt = video_format_id
-
-    outtmpl = os.path.join(DOWNLOADS_DIR, f"{job_id}.%(ext)s")
-    base_opts = {
-        "format": fmt,
-        "outtmpl": outtmpl,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [_progress_hook(job_id)],
-    }
-    if not audio_only:
-        base_opts["merge_output_format"] = "mp4"
-        # ffmpeg standart bo'yicha MP4 metadatasini (moov atom) fayl
-        # oxiriga yozadi — Telegram va boshqa ko'p platformalar preview/
-        # thumbnail yasash uchun faylning boshini o'qiydi va buni topa
-        # olmay, videoni noto'g'ri (masalan 1x1) ko'rsatadi. "+faststart"
-        # metadatani boshiga ko'chiradi (remux, sifatga ta'sir qilmaydi).
-        base_opts["postprocessor_args"] = {"Merger": ["-movflags", "+faststart"]}
-    if audio_only:
-        base_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-        }]
-
     def run():
         try:
-            if start_time is not None or end_time is not None:
-                # `download_ranges` (ffmpeg orqali tarmoqdan vaqt-asosli seek)
-                # ISHLATILMAYDI — YouTube CDN uni qattiq sekinlashtiradi
-                # (_fetch_prefix izohiga qarang). Buning o'rniga native
-                # tezkor qisman/to'liq yuklash + mahalliy kesish.
-                final_path = _with_retries(job_id, lambda: _download_clip(
-                    job_id, url, video_format_id, audio_format_id, audio_only, start_time or 0, end_time,
-                ))
-                if title:
-                    ext = os.path.splitext(final_path)[1]
-                    desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
-                    os.replace(final_path, desired_path)
-                    final_path = desired_path
-            else:
-                def download_once():
-                    with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
-                        ydl.download([url])
-
-                _with_retries(job_id, download_once)
-                raw_path = _find_output_file(job_id)
-                final_path = raw_path
-                if raw_path and title:
-                    ext = os.path.splitext(raw_path)[1]
-                    desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
-                    os.replace(raw_path, desired_path)
-                    final_path = desired_path
+            # Klipsiz (butun video) yuklashlar ham `_download_clip` orqali
+            # o'tadi (start_time=0, end_time=None bilan) — yt-dlp'ning
+            # o'z yuklovchisi EMAS. Sabab: yt-dlp'ning odatiy yuklovchisi
+            # katta (~100+ MB) formatlarda uzilgan ulanishni "davom ettirish"
+            # uchun Range so'rov yuboradi, va aynan shu so'rovga YouTube CDN
+            # tasodifiy 403 qaytaradi (o'lchandi: 360p/480p muammosiz, 1080p60
+            # va 2160p60 muntazam yiqiladi — quyidagi _TRANSIENT_ERROR_MARKERS
+            # izohiga qarang). `_download_clip` filesize ma'lum bo'lgan har
+            # bir formatni 8 MB'lik mustaqil (davom ettirilmaydigan) Range
+            # so'rovlar bilan yuklaydi, shu bilan aynan shu 403 xavfini
+            # kamaytiradi.
+            final_path = _with_retries(job_id, lambda: _download_clip(
+                job_id, url, video_format_id, audio_format_id, audio_only,
+                start_time or 0, end_time,
+            ))
+            if title:
+                ext = os.path.splitext(final_path)[1]
+                desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), ext)
+                os.replace(final_path, desired_path)
+                final_path = desired_path
             with jobs_lock:
                 jobs[job_id]["status"] = "finished"
                 jobs[job_id]["percent"] = 100
