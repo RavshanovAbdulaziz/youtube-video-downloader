@@ -1,0 +1,39 @@
+# `docker build` copies straight from the working directory, not from git —
+# .gitignore does NOT protect these from ending up baked into an image layer.
+# Without this file, a real, already-populated cookies export
+# (backend/www.youtube.com_cookies.txt) and backend/config.json (which can
+# hold a live Telegram bot_token) get COPYed into the image by `Dockerfile`'s
+# `COPY backend/ .` and become retrievable from the image forever, even after
+# the file is later deleted from the build context.
+.git/
+__pycache__/
+*.pyc
+_numba_cache/
+.venv/
+venv/
+env/
+*.log
+node_modules/
+.DS_Store
+
+# Secrets / credentials — never bake these into an image.
+.env
+*.key
+*.pem
+*.pub
+cookies.txt
+*_cookies.txt
+backend/cookies.txt
+backend/config.json
+backend/logs/
+
+# Test-time stray media files.
+/*.mp4
+/*.mp3
+/*.webm
+/*.mkv
+
+# Local build/dist output (PyInstaller, launcher builds).
+/build/
+/dist/
+backend/downloads/

@@ -184,10 +184,15 @@ def ydl_opts_ctx(extra: dict):
     # SABR streamingni majburlaydi va ko'pchilik DASH formatlarini (jumladan
     # audio-only treklarni) URL'siz qoldiradi — natijada audio_tracks bo'sh
     # chiqadi va segment (start/end) yuklab olish uchun kerakli byte-range
-    # so'rovlar ishlamay qoladi. "mweb" mijozi cookie bilan ham to'liq DASH
-    # formatlarni (audio-only va range-so'rovga chidamli URL'lar bilan)
-    # qaytaradi, shuning uchun uni aniq belgilaymiz.
-    opts["extractor_args"] = {"youtube": {"player_client": ["mweb"]}}
+    # so'rovlar ishlamay qoladi. "web_embedded" bunday emas — cookie bilan
+    # ham to'liq DASH formatlarni beradi. MUHIM: avval "mweb" tanlangan edi,
+    # lekin u ARXIVLANGAN JONLI EFIR (tugagan livestream) yozuvlarida taxminan
+    # 32-38 MB'dan keyin har doim 403 qaytaradi (butunlay yangi URL/sessiya
+    # bilan ham) — "web_embedded" esa xuddi shu formatni (~1 GB'dan ko'proq
+    # tekshirildi) devorsiz beradi. "mweb" ikkinchi variant sifatida
+    # qoldirilgan — ba'zi videolarda joylashtirish (embedding) o'chirilgan
+    # bo'lsa, "web_embedded" butunlay ishlamay qoladi, "mweb" esa ishlaydi.
+    opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded", "mweb"]}}
     pot_base_url = POT_BASE_URL or pot_server.ensure_running()
     if pot_base_url:
         opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
@@ -722,7 +727,7 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
                     start_time: float | None = None, end_time: float | None = None) -> str:
     job_id = uuid.uuid4().hex
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "percent": 0}
+        jobs[job_id] = {"status": "queued", "percent": 0, "created_at": time.time()}
 
     def run():
         try:
@@ -762,7 +767,7 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
 def start_subtitle_download(url: str, lang_code: str, auto: bool, title: str | None = None) -> str:
     job_id = uuid.uuid4().hex
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "percent": 0}
+        jobs[job_id] = {"status": "queued", "percent": 0, "created_at": time.time()}
 
     outtmpl = os.path.join(DOWNLOADS_DIR, f"{job_id}.%(ext)s")
     base_opts = {
@@ -828,3 +833,28 @@ def _find_output_file(job_id: str) -> str | None:
 def get_progress(job_id: str) -> dict | None:
     with jobs_lock:
         return jobs.get(job_id)
+
+
+# `cleanup_job` faqat mijoz `/api/file/{job_id}`ni SO'RASA chaqiriladi — agar
+# job xato bilan tugasa, yoki mijoz sahifani yopib/qayta yuklab faylni hech
+# qachon so'ramasa, `jobs` yozuvi (va tugagan bo'lsa — DOWNLOADS_DIR'dagi
+# fayli) abadiy xotira/diskda qolib ketardi. Bu fon "tozalovchi" (reaper)
+# shuni oldini oladi: yaratilganidan beri _JOB_TTL_SECONDS'dan ko'p vaqt
+# o'tgan har qanday job (holatidan qat'i nazar) muntazam tozalanadi.
+_JOB_TTL_SECONDS = 3 * 3600  # 3 soat
+
+
+def _reap_stale_jobs() -> None:
+    while True:
+        time.sleep(600)
+        now = time.time()
+        with jobs_lock:
+            stale_ids = [
+                jid for jid, job in jobs.items()
+                if now - job.get("created_at", now) > _JOB_TTL_SECONDS
+            ]
+        for jid in stale_ids:
+            cleanup_job(jid)
+
+
+threading.Thread(target=_reap_stale_jobs, daemon=True).start()

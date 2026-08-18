@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -43,8 +44,85 @@ LOCAL_API_BASE_URL = os.environ.get("LOCAL_API_BASE_URL", "")
 _DEFAULT_MAX_MB = "1900" if LOCAL_API_BASE_URL else "49"
 MAX_TELEGRAM_MB = int(os.environ.get("MAX_TELEGRAM_MB", _DEFAULT_MAX_MB))
 
+# Ixtiyoriy ruxsat ro'yxati: bo'sh bo'lsa (standart), bot HAR QANDAY Telegram
+# foydalanuvchisiga ochiq — shaxsiy/kichik guruh uchun ishlatilsa, buni
+# TELEGRAM_ALLOWED_USER_IDS="123456789,987654321" bilan cheklash mumkin
+# (@userinfobot orqali o'z ID'ingizni bilib olasiz).
+_allowed_ids_raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").strip()
+ALLOWED_USER_IDS = (
+    {int(x) for x in _allowed_ids_raw.split(",") if x.strip()} if _allowed_ids_raw else None
+)
+
+# Bir vaqtning o'zida serverda ishlaydigan yuklash/ajratish job'lari soniga
+# global chegara — bo'lmasa, istalgan (yoki ruxsat berilgan) foydalanuvchi
+# ko'plab og'ir (masalan 2160p60, bir necha GB) so'rovlarni ketma-ket yuborib,
+# CPU/tarmoq/diskni cheksiz band qilib qo'yishi mumkin edi.
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
+_active_jobs = 0
+_active_jobs_lock = asyncio.Lock()
+
+
+async def _try_acquire_job_slot() -> bool:
+    """Bo'sh joy bo'lsa darhol band qiladi va True qaytaradi; bo'lmasa
+    (asyncio.Semaphore'dan farqli o'laroq) NAVBATGA TURMASDAN darhol False
+    qaytaradi — foydalanuvchi "server band" xabarini kutmasdan darhol ko'radi,
+    o'rniga jim kutish/osilib qolish emas."""
+    global _active_jobs
+    async with _active_jobs_lock:
+        if _active_jobs >= MAX_CONCURRENT_JOBS:
+            return False
+        _active_jobs += 1
+        return True
+
+
+async def _release_job_slot() -> None:
+    global _active_jobs
+    async with _active_jobs_lock:
+        _active_jobs = max(0, _active_jobs - 1)
+
+
+# yt-dlp'ning umumiy (generic) ekstraktori deyarli istalgan HTTP(S) URL'ni
+# so'rashga urinadi — domenni YouTube bilan cheklamasak, istalgan foydalanuvchi
+# botni SSRF-ga o'xshash vosita sifatida ishlatishi mumkin edi (masalan ichki
+# tarmoq/bulut metadata manzillariga serverdan so'rov yuborish).
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+
+
+def _is_youtube_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _YOUTUBE_HOSTS or host.endswith(".youtube.com")
+
+
+def _is_allowed(user_id: int | None) -> bool:
+    return ALLOWED_USER_IDS is None or user_id in ALLOWED_USER_IDS
+
+
 router = Router()
 store = ContextStore()
+
+
+# ---------------------------------------------------------------------------
+# Ruxsat tekshiruvi (agar TELEGRAM_ALLOWED_USER_IDS berilgan bo'lsa) — bot
+# so'rovni haqiqatan bajarishdan OLDIN, har qanday xabar/tugma bosishda.
+# ---------------------------------------------------------------------------
+
+@router.message.outer_middleware()
+async def _auth_message_middleware(handler, event: Message, data: dict):
+    if not _is_allowed(event.from_user.id if event.from_user else None):
+        await event.answer(texts.NOT_AUTHORIZED_TEXT)
+        return None
+    return await handler(event, data)
+
+
+@router.callback_query.outer_middleware()
+async def _auth_callback_middleware(handler, event: CallbackQuery, data: dict):
+    if not _is_allowed(event.from_user.id if event.from_user else None):
+        await event.answer(texts.NOT_AUTHORIZED_TEXT, show_alert=True)
+        return None
+    return await handler(event, data)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +174,13 @@ async def on_help(message: Message) -> None:
 @router.message(F.text.contains("http"))
 async def on_url(message: Message) -> None:
     url = message.text.strip()
+    if not _is_youtube_url(url):
+        # yt-dlp'ning umumiy ekstraktori aks holda deyarli ISTALGAN HTTP(S)
+        # manzilga (ichki tarmoq/bulut metadata xizmatlari ham) serverdan
+        # so'rov yuborishi mumkin edi — yuqoridagi _is_youtube_url izohiga
+        # qarang.
+        await message.answer(texts.NOT_YOUTUBE_TEXT)
+        return
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     status = await message.answer("⏳ Ma'lumot olinmoqda...")
     try:
@@ -117,7 +202,14 @@ async def on_url(message: Message) -> None:
     ctx = store.get(token)
 
     await status.delete()
-    await _send_info_card(message, token, ctx)
+    try:
+        await _send_info_card(message, token, ctx)
+    except Exception:
+        # `status` xabari yuqorida allaqachon o'chirilgan — shu bo'lmasa
+        # foydalanuvchi hech qanday javob ko'rmay qolardi (loading xabari
+        # yo'qoladi-yu, kartochka esa hech qachon kelmaydi).
+        logger.exception("Failed to send info card for %s", url)
+        await message.answer("❌ Kutilmagan xatolik yuz berdi, qayta urinib ko'ring.")
 
 
 # ---------------------------------------------------------------------------
@@ -274,10 +366,15 @@ async def _poll_download(
                 text = texts.merging_caption(ctx)
             elif status == "finished":
                 await _safe_edit_text(message, texts.uploading_caption(ctx))
-                await _send_result_file(
-                    message, progress["file"], width=width, height=height, duration=ctx.duration
-                )
-                downloader.cleanup_job(job_id)
+                # `finally` — Telegram'ga yuklash (katta video/audio uchun eng
+                # xato-moyil qadam) muvaffaqiyatsiz bo'lsa ham, job/fayl
+                # abadiy "sizib qolmasligi" uchun tozalash HAR DOIM bajariladi.
+                try:
+                    await _send_result_file(
+                        message, progress["file"], width=width, height=height, duration=ctx.duration
+                    )
+                finally:
+                    downloader.cleanup_job(job_id)
                 return
             elif status == "error":
                 await _safe_edit_text(message, texts.error_caption(ctx, progress.get("error")))
@@ -308,10 +405,18 @@ async def _poll_separate(message: Message, ctx: VideoContext, job_id: str, actio
                 text = texts.separate_progress_caption(ctx, status, pct, progress.get("ai_stage"))
             elif status == "finished":
                 await _safe_edit_text(message, texts.uploading_caption(ctx))
-                await _send_result_file(message, progress["speech_file"], caption="🗣 Nutq (speech)")
-                separator.cleanup_file(job_id, "speech")
-                await _send_result_file(message, progress["background_file"], caption="🎼 Fon (background)")
-                separator.cleanup_file(job_id, "background")
+                # Ikkala fayl ham MUSTAQIL: birining yuborilishi (Telegram
+                # xatosi bilan) muvaffaqiyatsiz bo'lsa ham, (a) tozalash shu
+                # fayl uchun baribir bajariladi (sizib qolmasin) va (b)
+                # ikkinchi fayl baribir yuborishga urinib ko'riladi.
+                for key, caption in (("speech", "🗣 Nutq (speech)"), ("background", "🎼 Fon (background)")):
+                    try:
+                        try:
+                            await _send_result_file(message, progress[f"{key}_file"], caption=caption)
+                        finally:
+                            separator.cleanup_file(job_id, key)
+                    except Exception:
+                        logger.exception("Failed to send %s file for job %s", key, job_id)
                 return
             elif status == "error":
                 await _safe_edit_text(message, texts.error_caption(ctx, progress.get("error")))
@@ -332,6 +437,20 @@ async def _poll_separate(message: Message, ctx: VideoContext, job_id: str, actio
 # Ish (job) boshlash
 # ---------------------------------------------------------------------------
 
+async def _poll_download_and_release(*args, **kwargs) -> None:
+    try:
+        await _poll_download(*args, **kwargs)
+    finally:
+        await _release_job_slot()
+
+
+async def _poll_separate_and_release(*args, **kwargs) -> None:
+    try:
+        await _poll_separate(*args, **kwargs)
+    finally:
+        await _release_job_slot()
+
+
 @router.callback_query(DownloadVideoCB.filter())
 async def on_download_video(callback: CallbackQuery, callback_data: DownloadVideoCB) -> None:
     ctx = _ctx_or_none(callback_data.token)
@@ -342,17 +461,34 @@ async def on_download_video(callback: CallbackQuery, callback_data: DownloadVide
     if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
+    chosen = next((r for r in ctx.resolutions if r["format_id"] == callback_data.format_id), None)
+    # Ma'lum bo'lgan hajm chegaradan katta bo'lsa, GB'larcha yuklab olib
+    # bo'lgach rad etish o'rniga — hech narsa yuklamasdan darhol xabar
+    # beramiz. (Hajm noma'lum bo'lsa, `_send_result_file`dagi asl tekshiruv
+    # baribir ishlayveradi — yuklab olingandan keyin.)
+    filesize = (chosen or {}).get("filesize")
+    if filesize and filesize / 1024 / 1024 > MAX_TELEGRAM_MB:
+        ctx.finish(action_key)
+        await callback.answer()
+        await callback.message.answer(
+            texts.too_large_text(filesize / 1024 / 1024, WEB_UI_URL),
+            reply_markup=kb.web_ui_link(WEB_UI_URL) if WEB_UI_URL else None,
+        )
+        return
+    if not await _try_acquire_job_slot():
+        ctx.finish(action_key)
+        await callback.answer(texts.BUSY_SERVER_ALERT, show_alert=True)
+        return
     await callback.answer()
     job_id = downloader.start_download(
         ctx.url, callback_data.format_id, ctx.audio_format_id, False, ctx.title
     )
-    chosen = next((r for r in ctx.resolutions if r["format_id"] == callback_data.format_id), None)
     # Kartochka (thumbnail + menyu) o'z holicha qoladi — foydalanuvchi shu
     # video uchun darhol boshqa xizmatni ham tanlay oladi. Progress alohida
     # xabarda kuzatiladi.
     await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
     status = await callback.message.answer(texts.starting_caption(ctx))
-    asyncio.create_task(_poll_download(
+    asyncio.create_task(_poll_download_and_release(
         status, ctx, job_id, action_key,
         width=chosen.get("width") if chosen else None,
         height=chosen.get("height") if chosen else None,
@@ -369,11 +505,15 @@ async def on_download_audio(callback: CallbackQuery, callback_data: DownloadAudi
     if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
+    if not await _try_acquire_job_slot():
+        ctx.finish(action_key)
+        await callback.answer(texts.BUSY_SERVER_ALERT, show_alert=True)
+        return
     await callback.answer()
     job_id = downloader.start_download(ctx.url, None, ctx.audio_format_id, True, ctx.title)
     await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
     status = await callback.message.answer(texts.starting_caption(ctx))
-    asyncio.create_task(_poll_download(status, ctx, job_id, action_key))
+    asyncio.create_task(_poll_download_and_release(status, ctx, job_id, action_key))
 
 
 @router.callback_query(DownloadSubtitleCB.filter())
@@ -410,11 +550,15 @@ async def on_separate(callback: CallbackQuery, callback_data: SeparateCB) -> Non
     if not ctx.try_start(action_key):
         await callback.answer(texts.BUSY_ALERT, show_alert=True)
         return
+    if not await _try_acquire_job_slot():
+        ctx.finish(action_key)
+        await callback.answer(texts.BUSY_SERVER_ALERT, show_alert=True)
+        return
     await callback.answer()
     job_id = separator.start_separation(ctx.url, ctx.audio_format_id, ctx.title, callback_data.engine)
     await _edit_card(callback.message, texts.card_header(ctx), kb.main_menu(ctx, callback_data.token))
     status = await callback.message.answer(texts.starting_caption(ctx))
-    asyncio.create_task(_poll_separate(status, ctx, job_id, action_key))
+    asyncio.create_task(_poll_separate_and_release(status, ctx, job_id, action_key))
 
 
 @router.errors()

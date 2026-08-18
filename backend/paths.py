@@ -18,8 +18,10 @@ any other backend module:
 import json
 import os
 import sys
+import threading
 
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_config_lock = threading.Lock()
 
 
 def _base_dir() -> str:
@@ -61,13 +63,23 @@ def read_config() -> dict:
 
 
 def write_config(**updates) -> dict:
-    """Merge ``updates`` into the stored config and persist it (atomic write)."""
-    merged = {**read_config(), **updates}
-    tmp_path = CONFIG_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(merged, f, indent=2)
-    os.replace(tmp_path, CONFIG_FILE)
-    return merged
+    """Merge ``updates`` into the stored config and persist it (atomic write).
+
+    Locked around the whole read-modify-write: without this, two threads in
+    this process (e.g. ai_setup.py's background install thread writing
+    `gpu=...` while the tray app's GUI thread writes `bot_token=...`) can
+    both read the same on-disk state, and whichever writes last silently
+    drops the other's update. (Doesn't protect against a *separate process*
+    — e.g. Docker's api/bot containers — writing concurrently; the atomic
+    `os.replace` at least keeps the file itself from getting corrupted.)
+    """
+    with _config_lock:
+        merged = {**read_config(), **updates}
+        tmp_path = CONFIG_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2)
+        os.replace(tmp_path, CONFIG_FILE)
+        return merged
 
 
 # ---------------------------------------------------------------------------

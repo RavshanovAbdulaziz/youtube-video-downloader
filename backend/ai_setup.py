@@ -62,9 +62,23 @@ def current_device() -> str:
     return "cuda" if paths.read_config().get("gpu") else "cpu"
 
 
+_PIP_TIMEOUT_SECONDS = 1800  # 30 daqiqa — torch (~2-3 GB) kabi katta yuklamalar uchun
+
+
 def _run_pip(args: list[str]) -> None:
     cmd = [_python(), "-m", "pip", "install", "--no-warn-script-location", *args]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_PIP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Timeout'siz bu yerda abadiy osilib qolishi mumkin edi (uzilgan/juda
+        # sekin internet) — `ensure_installed`dagi `_install_lock` global
+        # bo'lgani uchun bu BUTUN AI ajratish funksiyasini barcha
+        # foydalanuvchilar uchun dastur qayta ishga tushirilguncha bloklab
+        # qo'yardi.
+        raise RuntimeError(
+            f"pip install {_PIP_TIMEOUT_SECONDS // 60} daqiqada tugamadi "
+            "(internet sekin yoki uzilgan bo'lishi mumkin) — qayta urinib ko'ring"
+        )
     if result.returncode != 0:
         raise RuntimeError((result.stdout + result.stderr)[-2000:])
 

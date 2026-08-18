@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 
 import yt_dlp
@@ -11,7 +12,7 @@ from yt_dlp.utils import download_range_func
 
 import ai_setup
 import paths
-from downloader import DOWNLOADS_DIR, _sanitize_filename, _unique_path, ydl_opts_ctx
+from downloader import DOWNLOADS_DIR, _is_transient, _sanitize_filename, _unique_path, ydl_opts_ctx
 
 SEPARATE_TMP_DIR = paths.SEPARATE_TMP_DIR
 
@@ -129,6 +130,38 @@ def _download_progress_hook(job_id: str):
     return hook
 
 
+_DOWNLOAD_ATTEMPTS = 3
+_RETRY_DELAY_SECONDS = 2
+
+
+def _discard_source_files(work_dir: str) -> None:
+    for f in os.listdir(work_dir):
+        if f.startswith("source."):
+            try:
+                os.remove(os.path.join(work_dir, f))
+            except OSError:
+                pass
+
+
+def _download_source(job_id: str, url: str, base_opts: dict, work_dir: str) -> None:
+    """downloader.py'dagi CDN 403 muammosiga (o'sha fayldagi izohga qarang)
+    audio-only yuklashda ham duch kelinadi — bu yerda ham xuddi shu
+    "vaqtinchalik xatoda noldan qayta urinish" strategiyasi qo'llanadi."""
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            return
+        except Exception as e:
+            if attempt == _DOWNLOAD_ATTEMPTS or not _is_transient(e):
+                raise
+            _discard_source_files(work_dir)
+            with jobs_lock:
+                jobs[job_id]["status"] = "downloading"
+                jobs[job_id]["percent"] = 0
+            time.sleep(_RETRY_DELAY_SECONDS)
+
+
 def start_separation(url: str, audio_format_id: str, title: str | None = None,
                       engine: str = "demucs",
                       start_time: float | None = None, end_time: float | None = None) -> str:
@@ -137,7 +170,7 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
 
     job_id = uuid.uuid4().hex
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "percent": 0}
+        jobs[job_id] = {"status": "queued", "percent": 0, "created_at": time.time()}
 
     def run():
         work_dir = os.path.join(SEPARATE_TMP_DIR, job_id)
@@ -169,12 +202,14 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
                 base_opts["download_ranges"] = download_range_func(
                     None, [(start_time or 0, end_time if end_time is not None else float("inf"))]
                 )
-            with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+            _download_source(job_id, url, base_opts, work_dir)
 
             source_file = next(
-                os.path.join(work_dir, f) for f in os.listdir(work_dir) if f.startswith("source.")
+                (os.path.join(work_dir, f) for f in os.listdir(work_dir) if f.startswith("source.")),
+                None,
             )
+            if not source_file:
+                raise RuntimeError("Audio yuklab olinmadi (source fayl topilmadi)")
 
             with jobs_lock:
                 jobs[job_id]["status"] = "separating"
@@ -224,3 +259,33 @@ def cleanup_file(job_id: str, which: str) -> None:
             os.remove(path)
         except OSError:
             pass
+
+
+# `cleanup_file` faqat mijoz uni SO'RASA (har ikkala fayl uchun alohida)
+# chaqiriladi — mijoz sahifani yopib ketsa yoki faqat bittasini yuklab olsa,
+# `jobs` yozuvi va (tugagan bo'lsa) qolgan mp3 fayl abadiy qolib ketardi. Bu
+# fon "tozalovchi" (reaper) shuni oldini oladi.
+_JOB_TTL_SECONDS = 3 * 3600  # 3 soat
+
+
+def _reap_stale_jobs() -> None:
+    while True:
+        time.sleep(600)
+        now = time.time()
+        with jobs_lock:
+            stale_ids = [
+                jid for jid, job in jobs.items()
+                if now - job.get("created_at", now) > _JOB_TTL_SECONDS
+            ]
+            stale_jobs = [(jid, jobs.pop(jid)) for jid in stale_ids]
+        for _jid, job in stale_jobs:
+            for key in ("speech_file", "background_file"):
+                path = job.get(key)
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
+
+threading.Thread(target=_reap_stale_jobs, daemon=True).start()

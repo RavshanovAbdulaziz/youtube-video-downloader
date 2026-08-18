@@ -47,6 +47,12 @@ const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
 
 let currentInfo = null;
 
+// Progress-poll setInterval'lari ketma-ket shuncha marta muvaffaqiyatsiz
+// bo'lsa (fetch/JSON xatosi), to'xtatiladi va xato ko'rsatiladi — aks holda
+// (avval) xato hech qayerda ushlanmagani uchun interval jim ravishda abadiy
+// ishlayverar, tugma va progress esa "Boshlanmoqda..."da muzlab qolardi.
+const POLL_MAX_CONSECUTIVE_FAILURES = 5;
+
 // ---------------------------------------------------------------------------
 // Tabs (Video / Audio / Subtitr / AI ajratish)
 // ---------------------------------------------------------------------------
@@ -113,6 +119,12 @@ computeNoBtn.addEventListener("click", () => {
 });
 
 computeStatus.addEventListener("click", openComputeModal);
+computeStatus.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    openComputeModal();
+  }
+});
 
 updateComputeStatusText();
 if (getComputePreference() === null) {
@@ -399,9 +411,23 @@ separateBtn.addEventListener("click", async () => {
 });
 
 function pollSeparateProgress(jobId, base) {
+  let consecutiveFailures = 0;
   const interval = setInterval(async () => {
-    const res = await fetch(`${base}/api/separate/progress/${jobId}`);
-    const data = await res.json();
+    let data;
+    try {
+      const res = await fetch(`${base}/api/separate/progress/${jobId}`);
+      data = await res.json();
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        clearInterval(interval);
+        showError("Server bilan aloqa uzildi. Sahifani yangilab qayta urinib ko'ring.");
+        separateProgressWrap.classList.add("hidden");
+        separateBtn.disabled = false;
+      }
+      return;
+    }
     const pct = data.percent != null ? data.percent : 0;
 
     if (data.status === "queued") {
@@ -467,9 +493,23 @@ downloadSubtitleBtn.addEventListener("click", async () => {
 });
 
 function pollSubtitleProgress(jobId, base) {
+  let consecutiveFailures = 0;
   const interval = setInterval(async () => {
-    const res = await fetch(`${base}/api/progress/${jobId}`);
-    const data = await res.json();
+    let data;
+    try {
+      const res = await fetch(`${base}/api/progress/${jobId}`);
+      data = await res.json();
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        clearInterval(interval);
+        showError("Server bilan aloqa uzildi. Sahifani yangilab qayta urinib ko'ring.");
+        subtitleProgressWrap.classList.add("hidden");
+        downloadSubtitleBtn.disabled = false;
+      }
+      return;
+    }
 
     if (data.status === "finished") {
       clearInterval(interval);
@@ -488,9 +528,27 @@ function pollSubtitleProgress(jobId, base) {
 }
 
 function pollProgress(jobId, base) {
+  let consecutiveFailures = 0;
   const interval = setInterval(async () => {
-    const res = await fetch(`${base}/api/progress/${jobId}`);
-    const data = await res.json();
+    let data;
+    try {
+      const res = await fetch(`${base}/api/progress/${jobId}`);
+      data = await res.json();
+      consecutiveFailures = 0;
+    } catch (e) {
+      // Tarmoq uzilishi/vaqtinchalik xato — bir necha marta jim o'tkazib
+      // yuboriladi (keyingi tick baribir qayta uradi). Bo'lmasa (avval)
+      // bu yerdagi xato hech qayerda ushlanmagani uchun interval abadiy
+      // ishlab, progress "Boshlanmoqda..."da muzlab qolardi.
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        clearInterval(interval);
+        showError("Server bilan aloqa uzildi. Sahifani yangilab qayta urinib ko'ring.");
+        progressWrap.classList.add("hidden");
+        setButtonsDisabled(false);
+      }
+      return;
+    }
 
     if (data.status === "queued") {
       setProgress(progressFill, 0, true);

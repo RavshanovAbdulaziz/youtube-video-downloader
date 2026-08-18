@@ -14,6 +14,9 @@ EXPIRED_ALERT = "⏳ Muddati tugagan, havolani qayta yuboring."
 BUSY_ALERT = "⌛ Joriy vazifa hali tugamadi, biroz kuting."
 NO_AUDIO_ALERT = "Bu video uchun audio trek topilmadi."
 BACK_LABEL = "🔙 Orqaga"
+NOT_AUTHORIZED_TEXT = "🚫 Kechirasiz, bu bot hozircha faqat cheklangan foydalanuvchilar uchun."
+NOT_YOUTUBE_TEXT = "❌ Faqat YouTube havolalarini qabul qilaman."
+BUSY_SERVER_ALERT = "⌛ Server hozir band, biroz so'ng qayta urinib ko'ring."
 
 
 def help_text(max_telegram_mb: int) -> str:

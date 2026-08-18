@@ -9,13 +9,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # storyboard (rasm) formatlar qoladi, haqiqiy video/audio format topilmaydi.
 # Node.js'ni rasmiy nodejs.org'dan aniq versiya + SHA256 tekshiruvi bilan
 # o'rnatamiz (curl-to-shell emas — faqat yuklab olish + tekshirish + ochish).
+# Xost arxitekturasiga qarab to'g'ri tarball tanlanadi — avval bu doim
+# linux-arm64 edi, ya'ni oddiy amd64 Docker xostda (eng keng tarqalgani)
+# build muvaffaqiyatli tugar, lekin ishga tushganda "exec format error" bilan
+# qulardi va yt-dlp JS runtime'siz qolib faqat storyboard formatlarga tushardi.
 ARG NODE_VERSION=22.23.1
-RUN cd /tmp \
-    && curl -fsSLO https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz \
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) node_arch=x64 ;; \
+        arm64) node_arch=arm64 ;; \
+        *) echo "Qo'llab-quvvatlanmaydigan arxitektura: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    cd /tmp \
+    && curl -fsSLO https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz \
     && curl -fsSLO https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt \
-    && grep "node-v${NODE_VERSION}-linux-arm64.tar.xz" SHASUMS256.txt | sha256sum -c - \
-    && tar -xJf node-v${NODE_VERSION}-linux-arm64.tar.xz -C /usr/local --strip-components=1 \
-    && rm -f node-v${NODE_VERSION}-linux-arm64.tar.xz SHASUMS256.txt
+    && grep "node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" SHASUMS256.txt | sha256sum -c - \
+    && tar -xJf node-v${NODE_VERSION}-linux-${node_arch}.tar.xz -C /usr/local --strip-components=1 \
+    && rm -f node-v${NODE_VERSION}-linux-${node_arch}.tar.xz SHASUMS256.txt
 
 WORKDIR /app/backend
 

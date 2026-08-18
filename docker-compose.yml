@@ -17,7 +17,14 @@ services:
       - YTDLP_POT_BASE_URL=http://pot-provider:4416
     volumes:
       - downloads:/app/backend/downloads
-      - ./backend/cookies.txt:/app/backend/cookies.txt:ro
+      # Ixtiyoriy (README'ga qarang): faqat yosh cheklovli/yopiq videolar
+      # uchun kerak — PO token (pot-provider) asosiy himoya. Fayl yo'q bo'lsa
+      # bu bind mount `docker compose up`ni butunlay ishga tushirmaydi (Docker
+      # yo'q manbani bo'sh papka deb yaratadi, keyin yt-dlp uni cookie fayli
+      # sifatida ocholmaydi) — shuning uchun standart holatda o'chirilgan.
+      # Yoqish uchun: `cp backend/cookies.txt.example backend/cookies.txt` va
+      # ichiga haqiqiy cookie'larni joylang, keyin quyidagi qatorni oching.
+      # - ./backend/cookies.txt:/app/backend/cookies.txt:ro
     ports:
       - "80:8000"
     depends_on:
@@ -33,7 +40,14 @@ services:
       - YTDLP_POT_BASE_URL=http://pot-provider:4416
     volumes:
       - downloads:/app/backend/downloads
-      - ./backend/cookies.txt:/app/backend/cookies.txt:ro
+      # Ixtiyoriy (README'ga qarang): faqat yosh cheklovli/yopiq videolar
+      # uchun kerak — PO token (pot-provider) asosiy himoya. Fayl yo'q bo'lsa
+      # bu bind mount `docker compose up`ni butunlay ishga tushirmaydi (Docker
+      # yo'q manbani bo'sh papka deb yaratadi, keyin yt-dlp uni cookie fayli
+      # sifatida ocholmaydi) — shuning uchun standart holatda o'chirilgan.
+      # Yoqish uchun: `cp backend/cookies.txt.example backend/cookies.txt` va
+      # ichiga haqiqiy cookie'larni joylang, keyin quyidagi qatorni oching.
+      # - ./backend/cookies.txt:/app/backend/cookies.txt:ro
     depends_on:
       - pot-provider
     restart: unless-stopped
