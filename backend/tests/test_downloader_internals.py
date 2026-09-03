@@ -1,5 +1,6 @@
 """downloader.py'ning ichki yordamchi funksiyalari: qayta urinish siyosati,
 fayl nomini tozalash, format tanlash va MP4 (ISO-BMFF) tahlili."""
+import io
 import os
 
 import pytest
@@ -76,6 +77,65 @@ class TestWithRetries:
 
         with pytest.raises(RuntimeError, match="Video unavailable"):
             downloader._with_retries("job_permanent0", action)
+        assert len(calls) == 1, "doimiy xatoda ham qayta urinildi (trafik isrofi)"
+
+
+class TestFetchChunk:
+    """`_fetch_chunk` — bitta Range so'rovini butun faylni qayta boshlamasdan
+    joyida qayta so'raydigan qatlam (TestWithRetries'ning bo'lak darajasidagi
+    hamkasbi)."""
+
+    def test_returns_immediately_on_success(self):
+        calls = []
+
+        class FakeYdl:
+            def urlopen(self, req):
+                calls.append(req)
+                return io.BytesIO(b"data")
+
+        result = downloader._fetch_chunk(FakeYdl(), "http://x", {}, 0, 99)
+        assert result == b"data"
+        assert len(calls) == 1
+
+    def test_retries_transient_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr(downloader, "CHUNK_RETRY_DELAY_SECONDS", 0)
+        calls = []
+
+        class FakeYdl:
+            def urlopen(self, req):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                return io.BytesIO(b"ok")
+
+        result = downloader._fetch_chunk(FakeYdl(), "http://x", {}, 0, 99)
+        assert result == b"ok"
+        assert len(calls) == 3
+
+    def test_gives_up_after_max_attempts(self, monkeypatch):
+        monkeypatch.setattr(downloader, "CHUNK_RETRY_DELAY_SECONDS", 0)
+        calls = []
+
+        class FakeYdl:
+            def urlopen(self, req):
+                calls.append(1)
+                raise RuntimeError("HTTP Error 403: Forbidden")
+
+        with pytest.raises(RuntimeError, match="403"):
+            downloader._fetch_chunk(FakeYdl(), "http://x", {}, 0, 99)
+        assert len(calls) == downloader.CHUNK_RETRY_ATTEMPTS
+
+    def test_does_not_retry_permanent_error(self, monkeypatch):
+        monkeypatch.setattr(downloader, "CHUNK_RETRY_DELAY_SECONDS", 0)
+        calls = []
+
+        class FakeYdl:
+            def urlopen(self, req):
+                calls.append(1)
+                raise RuntimeError("Video unavailable")
+
+        with pytest.raises(RuntimeError, match="Video unavailable"):
+            downloader._fetch_chunk(FakeYdl(), "http://x", {}, 0, 99)
         assert len(calls) == 1, "doimiy xatoda ham qayta urinildi (trafik isrofi)"
 
 
@@ -187,3 +247,25 @@ class TestIterTopBoxes:
         # noto'g'ri o'qish o'rniga to'xtashi kerak.
         data = (999999).to_bytes(4, "big") + b"moov" + b"\x00" * 8
         assert list(downloader._iter_top_boxes(data)) == []
+
+
+class TestPlayerClientOrder:
+    """`ydl_opts_ctx` beradigan mijozlar ro'yxati. TARTIB shu yerda
+    tekshiriladi, chunki u tasodifiy emas: bir xil format_id bir nechta
+    mijozdan kelganda yt-dlp ro'yxatdagi BIRINCHI mijozning URL'ini oladi,
+    va faqat "tv_simply" URL'lari ~10 MB'dan keyin 403 bermaydi
+    (downloader.py'dagi izohga qarang)."""
+
+    def test_tv_simply_is_first(self):
+        with downloader.ydl_opts_ctx({}) as opts:
+            clients = opts["extractor_args"]["youtube"]["player_client"]
+        assert clients[0] == "tv_simply"
+
+    def test_cookie_capable_clients_remain_as_fallback(self):
+        # "tv_simply" cookie yubormaydi (yt-dlp'da SUPPORTS_COOKIES=False),
+        # shuning uchun yosh cheklovli / yopiq videolar uchun cookie
+        # qo'llaydigan mijozlar ro'yxatda qolishi shart.
+        with downloader.ydl_opts_ctx({}) as opts:
+            clients = opts["extractor_args"]["youtube"]["player_client"]
+        assert "web_embedded" in clients
+        assert "mweb" in clients

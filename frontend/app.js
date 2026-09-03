@@ -32,18 +32,46 @@ const separateProgressText = document.getElementById("separate-progress-text");
 const separateLinks = document.getElementById("separate-links");
 const speechFileLink = document.getElementById("speech-file-link");
 const backgroundFileLink = document.getElementById("background-file-link");
+const clipSection = document.getElementById("clip-section");
 const clipRangeStart = document.getElementById("clip-range-start");
 const clipRangeEnd = document.getElementById("clip-range-end");
 const clipStartLabel = document.getElementById("clip-start-label");
 const clipEndLabel = document.getElementById("clip-end-label");
 const clipSliderFill = document.getElementById("clip-slider-fill");
+const clipTimestampNote = document.getElementById("clip-timestamp-note");
 const computeModal = document.getElementById("compute-modal");
 const computeYesBtn = document.getElementById("compute-yes-btn");
 const computeNoBtn = document.getElementById("compute-no-btn");
 const computeStatus = document.getElementById("compute-status");
 const tabsNav = document.getElementById("tabs");
-const tabButtons = Array.from(document.querySelectorAll(".tab"));
-const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
+const tabButtons = Array.from(document.querySelectorAll(".tab:not(.mode-tab)"));
+const tabPanels = Array.from(document.querySelectorAll(".tab-panel:not(.mode-panel)"));
+const modeTabButtons = Array.from(document.querySelectorAll(".mode-tab"));
+const modePanels = Array.from(document.querySelectorAll(".mode-panel"));
+const liveBadge = document.getElementById("live-badge");
+const liveOptions = document.getElementById("live-options");
+const liveResolutionSelect = document.getElementById("live-resolution-select");
+const liveAudioToggle = document.getElementById("live-audio-toggle");
+const liveLangLabel = document.getElementById("live-lang-label");
+const liveLangSelect = document.getElementById("live-lang-select");
+const liveStartBtn = document.getElementById("live-start-btn");
+const liveAudioBtn = document.getElementById("live-audio-btn");
+const liveRecordingWrap = document.getElementById("live-recording-wrap");
+const liveElapsedText = document.getElementById("live-elapsed-text");
+const liveSizeText = document.getElementById("live-size-text");
+const liveStopBtn = document.getElementById("live-stop-btn");
+const liveErrorMsg = document.getElementById("live-error-msg");
+const liveErrorMsgText = document.getElementById("live-error-msg-text");
+const liveFileLink = document.getElementById("live-file-link");
+const transcriptQueryInput = document.getElementById("transcript-query-input");
+const transcriptChannelInput = document.getElementById("transcript-channel-input");
+const transcriptSearchBtn = document.getElementById("transcript-search-btn");
+const transcriptErrorMsg = document.getElementById("transcript-error-msg");
+const transcriptErrorMsgText = document.getElementById("transcript-error-msg-text");
+const transcriptProgressWrap = document.getElementById("transcript-progress-wrap");
+const transcriptProgressFill = document.getElementById("transcript-progress-fill");
+const transcriptEmptyMsg = document.getElementById("transcript-empty-msg");
+const transcriptResults = document.getElementById("transcript-results");
 
 let currentInfo = null;
 
@@ -70,15 +98,35 @@ tabButtons.forEach((btn) => {
 });
 
 function updateTabsAvailability(data) {
+  const isLive = !!data.is_live;
   const hasAudio = data.audio_tracks.length > 0;
   const hasSubtitles = (data.subtitles || []).length > 0;
-  document.querySelector('.tab[data-tab="audio"]').classList.toggle("hidden", !hasAudio);
-  document.querySelector('.tab[data-tab="separate"]').classList.toggle("hidden", !hasAudio);
-  document.querySelector('.tab[data-tab="subtitle"]').classList.toggle("hidden", !hasSubtitles);
+  // Jonli efirda hali noma'lum davomiylik/hajm bilan ishlaydigan oddiy
+  // Video/Audio/Subtitr/AI tablari mos kelmaydi — faqat maxsus "Efir" tabi
+  // ko'rsatiladi (pastdagi live-capture oqimi).
+  document.querySelector('.tab[data-tab="live"]').classList.toggle("hidden", !isLive);
+  document.querySelector('.tab[data-tab="video"]').classList.toggle("hidden", isLive);
+  document.querySelector('.tab[data-tab="audio"]').classList.toggle("hidden", isLive || !hasAudio);
+  document.querySelector('.tab[data-tab="separate"]').classList.toggle("hidden", isLive || !hasAudio);
+  document.querySelector('.tab[data-tab="subtitle"]').classList.toggle("hidden", isLive || !hasSubtitles);
   const visibleCount = tabButtons.filter((btn) => !btn.classList.contains("hidden")).length;
   tabsNav.classList.toggle("hidden", visibleCount <= 1);
-  setActiveTab("video");
+  setActiveTab(isLive ? "live" : "video");
 }
+
+// ---------------------------------------------------------------------------
+// Sahifa rejimi (Yuklab olish / Transkript qidiruv) — yuqori darajadagi tab,
+// video-card ichidagi Video/Audio/Subtitr/AI tablaridan mustaqil.
+// ---------------------------------------------------------------------------
+
+function setActiveMode(modeId) {
+  modeTabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === modeId));
+  modePanels.forEach((panel) => panel.classList.toggle("active", panel.dataset.modePanel === modeId));
+}
+
+modeTabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setActiveMode(btn.dataset.mode));
+});
 
 const LOCAL_BASE = "http://127.0.0.1:8000";
 const COMPUTE_PREF_KEY = "useLocalCompute";
@@ -177,6 +225,12 @@ function setProgress(fillEl, percent, indeterminate) {
 
 const CLIP_MIN_GAP = 1; // soniya — dastaklar bir-birining ustiga chiqib ketmasin
 
+// Havolaga qo'shilgan vaqt belgisidan (`?t=375`) olingan boshlanish nuqtasi,
+// soniyalarda; 0 — havolada vaqt belgisi bo'lmagan. Boshlanish dastagi hali
+// aynan shu joyda turgan ekan, foydalanuvchiga eslatma ko'rsatiladi (dastak
+// surilishi bilanoq eslatma o'z-o'zidan yo'qoladi).
+let linkStartTime = 0;
+
 // Slayderdagi ikkita dastak bir-biridan kamida CLIP_MIN_GAP uzoqlikda turishini
 // ta'minlaydi, keyin yorliqlar/to'ldirilgan chiziq va bosish ustuvorligini yangilaydi.
 function clampClipThumbs(moved) {
@@ -198,13 +252,25 @@ function updateClipUI() {
   const start = Number(clipRangeStart.value);
   const end = Number(clipRangeEnd.value);
 
-  clipStartLabel.textContent = formatDuration(start);
-  clipEndLabel.textContent = formatDuration(end);
+  // Foydalanuvchi hozir qo'lda kiritayotgan maydonni ustidan yozib
+  // qo'ymaslik uchun — faqat fokusda bo'lmagan maydon yangilanadi.
+  if (document.activeElement !== clipStartLabel) {
+    clipStartLabel.value = formatDuration(start) || "0:00";
+  }
+  if (document.activeElement !== clipEndLabel) {
+    clipEndLabel.value = formatDuration(end) || "0:00";
+  }
 
   if (max > 0) {
     clipSliderFill.style.left = `${(start / max) * 100}%`;
     clipSliderFill.style.right = `${100 - (end / max) * 100}%`;
   }
+
+  const usingLinkStart = linkStartTime > 0 && start === linkStartTime;
+  clipTimestampNote.textContent = usingLinkStart
+    ? `Havoladagi vaqt belgisi qo'llandi — boshlanish ${formatDuration(linkStartTime)}.`
+    : "";
+  clipTimestampNote.classList.toggle("hidden", !usingLinkStart);
 
   // Dastaklar bir-biriga yaqinlashganda "orqada" turgani ham bosilishi uchun —
   // uzoqdagi yarimda turgan dastakka ustunlik beriladi.
@@ -219,6 +285,52 @@ function updateClipUI() {
 
 clipRangeStart.addEventListener("input", () => clampClipThumbs("start"));
 clipRangeEnd.addEventListener("input", () => clampClipThumbs("end"));
+
+// "H:MM:SS", "M:SS" yoki xom soniyani soniyaga aylantiradi; noto'g'ri
+// matn kiritilsa — null qaytaradi (qiymat eskisiga qaytariladi).
+function parseClipTimeInput(str) {
+  const trimmed = String(str ?? "").trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(":").map((p) => p.trim());
+  if (parts.length > 3 || parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
+  let seconds = 0;
+  for (const part of parts) {
+    seconds = seconds * 60 + Number(part);
+  }
+  return seconds;
+}
+
+// Dastak yorlig'iga qo'lda kiritilgan vaqtni tasdiqlaydi: to'g'ri bo'lsa
+// tegishli slayder dastagini shu qiymatga suradi, aks holda eski qiymatga qaytaradi.
+function commitClipLabelInput(which) {
+  const input = which === "start" ? clipStartLabel : clipEndLabel;
+  const max = Number(clipRangeStart.max) || 0;
+  const parsed = parseClipTimeInput(input.value);
+  if (parsed === null || Number.isNaN(parsed)) {
+    updateClipUI();
+    return;
+  }
+  const clamped = Math.max(0, Math.min(max, Math.round(parsed)));
+  if (which === "start") {
+    clipRangeStart.value = clamped;
+    clampClipThumbs("start");
+  } else {
+    clipRangeEnd.value = clamped;
+    clampClipThumbs("end");
+  }
+}
+
+[clipStartLabel, clipEndLabel].forEach((input, idx) => {
+  const which = idx === 0 ? "start" : "end";
+  input.addEventListener("change", () => commitClipLabelInput(which));
+  input.addEventListener("focus", () => input.select());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      input.blur();
+    }
+  });
+});
 
 // Dastaklar chetlarda (0 va butun davomiylik) qolsa {start_time: null,
 // end_time: null} (ya'ni butun video) qaytaradi — aks holda tanlangan oraliq.
@@ -282,21 +394,33 @@ function renderInfo(data) {
   thumb.src = data.thumbnail || "";
   titleEl.textContent = data.title || "";
   durationText.textContent = formatDuration(data.duration);
+  liveBadge.classList.toggle("hidden", !data.is_live);
+  clipSection.classList.toggle("hidden", !!data.is_live);
 
   resolutionSelect.innerHTML = "";
+  liveResolutionSelect.innerHTML = "";
   data.resolutions.forEach((r) => {
+    const label = r.label + (r.filesize ? ` (~${(r.filesize / 1024 / 1024).toFixed(1)} MB)` : "");
     const opt = document.createElement("option");
     opt.value = r.format_id;
-    opt.textContent = r.label + (r.filesize ? ` (~${(r.filesize / 1024 / 1024).toFixed(1)} MB)` : "");
+    opt.textContent = label;
     resolutionSelect.appendChild(opt);
+    const liveOpt = document.createElement("option");
+    liveOpt.value = r.format_id;
+    liveOpt.textContent = r.label;
+    liveResolutionSelect.appendChild(liveOpt);
   });
 
   fillLangSelect(videoLangSelect, data.audio_tracks);
   fillLangSelect(audioLangSelect, data.audio_tracks);
   fillLangSelect(separateLangSelect, data.audio_tracks);
+  fillLangSelect(liveLangSelect, data.audio_tracks);
 
   audioToggle.checked = data.audio_tracks.length > 0;
   updateVideoLangVisibility();
+  liveAudioToggle.checked = data.audio_tracks.length > 0;
+  updateLiveLangVisibility();
+  resetLiveTab();
 
   const subtitles = data.subtitles || [];
   subtitleLangSelect.innerHTML = "";
@@ -309,9 +433,16 @@ function renderInfo(data) {
   subtitleProgressWrap.classList.add("hidden");
   subtitleFileLink.classList.add("hidden");
 
+  // Havolada vaqt belgisi bo'lsa (YouTube ulashish oynasidagi "Start at"
+  // katakchasi yoki transcript qidiruvi bergan `&t=375s`) — boshlanish dastagi
+  // o'sha nuqtaga qo'yiladi, tugash dastagi esa video oxirida qoladi.
   const duration = Math.max(1, Math.round(data.duration || 0));
+  linkStartTime = Math.min(
+    Math.max(0, Math.round(Number(data.start_time) || 0)),
+    Math.max(0, duration - CLIP_MIN_GAP),
+  );
   clipRangeStart.max = duration;
-  clipRangeStart.value = 0;
+  clipRangeStart.value = linkStartTime;
   clipRangeEnd.max = duration;
   clipRangeEnd.value = duration;
   updateClipUI();
@@ -581,3 +712,295 @@ function pollProgress(jobId, base) {
     }
   }, 1000);
 }
+
+// ---------------------------------------------------------------------------
+// Jonli efirni yozib olish ("Efir" tabi)
+// ---------------------------------------------------------------------------
+
+let liveJobId = null;
+let livePollInterval = null;
+
+function updateLiveLangVisibility() {
+  const showLang = currentInfo && currentInfo.audio_tracks.length > 1 && liveAudioToggle.checked;
+  liveLangLabel.classList.toggle("hidden", !showLang);
+}
+
+liveAudioToggle.addEventListener("change", updateLiveLangVisibility);
+
+function showLiveError(msg) {
+  liveErrorMsgText.textContent = msg;
+  liveErrorMsg.classList.remove("hidden");
+}
+
+function clearLiveError() {
+  liveErrorMsg.classList.add("hidden");
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "";
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+}
+
+// Video kartasi qayta chizilganda (yangi URL tekshirilganda) "Efir" tabini
+// boshlang'ich holatga qaytaradi — oldingi (agar bo'lsa) yozib olish holati
+// (progress, xato, tayyor fayl havolasi) ko'rinishda qolib ketmasin.
+function resetLiveTab() {
+  if (livePollInterval) {
+    clearInterval(livePollInterval);
+    livePollInterval = null;
+  }
+  liveJobId = null;
+  clearLiveError();
+  liveFileLink.classList.add("hidden");
+  liveRecordingWrap.classList.add("hidden");
+  liveOptions.classList.remove("hidden");
+  liveStartBtn.classList.remove("hidden");
+  liveAudioBtn.classList.remove("hidden");
+  liveStartBtn.disabled = false;
+  liveAudioBtn.disabled = false;
+  liveStopBtn.disabled = false;
+  liveElapsedText.textContent = "0:00";
+  liveSizeText.textContent = "";
+}
+
+async function startLiveCapture(body) {
+  clearLiveError();
+  liveFileLink.classList.add("hidden");
+  liveStartBtn.disabled = true;
+  liveAudioBtn.disabled = true;
+
+  const base = await apiBase();
+  try {
+    const res = await fetch(`${base}/api/live/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+
+    liveJobId = data.job_id;
+    liveOptions.classList.add("hidden");
+    liveStartBtn.classList.add("hidden");
+    liveAudioBtn.classList.add("hidden");
+    liveRecordingWrap.classList.remove("hidden");
+    pollLiveProgress(liveJobId, base);
+  } catch (e) {
+    showLiveError(e.message);
+    liveStartBtn.disabled = false;
+    liveAudioBtn.disabled = false;
+  }
+}
+
+liveStartBtn.addEventListener("click", () => {
+  if (!currentInfo) return;
+  const wantAudio = liveAudioToggle.checked;
+  startLiveCapture({
+    url: urlInput.value.trim(),
+    video_format_id: liveResolutionSelect.value,
+    audio_format_id: wantAudio && currentInfo.audio_tracks.length ? liveLangSelect.value : null,
+    audio_only: false,
+    title: currentInfo.title,
+  });
+});
+
+liveAudioBtn.addEventListener("click", () => {
+  if (!currentInfo) return;
+  // Ko'pchilik jonli efirlarda alohida audio-only trek yo'q — shunda
+  // tanlangan video (odatda audio o'z ichiga qo'shilgan) format manba
+  // sifatida yuboriladi, backend undan faqat audioni ajratib oladi.
+  const hasAudioTracks = currentInfo.audio_tracks.length > 0;
+  startLiveCapture({
+    url: urlInput.value.trim(),
+    video_format_id: hasAudioTracks ? null : liveResolutionSelect.value,
+    audio_format_id: hasAudioTracks ? liveLangSelect.value : null,
+    audio_only: true,
+    title: currentInfo.title,
+  });
+});
+
+liveStopBtn.addEventListener("click", async () => {
+  if (!liveJobId) return;
+  liveStopBtn.disabled = true;
+
+  const base = await apiBase();
+  try {
+    const res = await fetch(`${base}/api/live/stop/${liveJobId}`, { method: "POST" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || "To'xtatib bo'lmadi");
+    }
+  } catch (e) {
+    showLiveError(e.message);
+    liveStopBtn.disabled = false;
+  }
+});
+
+function pollLiveProgress(jobId, base) {
+  let consecutiveFailures = 0;
+  livePollInterval = setInterval(async () => {
+    let data;
+    try {
+      const res = await fetch(`${base}/api/progress/${jobId}`);
+      data = await res.json();
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        clearInterval(livePollInterval);
+        livePollInterval = null;
+        showLiveError("Server bilan aloqa uzildi. Sahifani yangilab qayta urinib ko'ring.");
+        resetLiveTab();
+      }
+      return;
+    }
+
+    if (data.status === "queued" || data.status === "downloading") {
+      liveElapsedText.textContent = formatDuration(Math.floor(data.elapsed || 0)) || "0:00";
+      liveSizeText.textContent = formatBytes(data.downloaded_bytes);
+    } else if (data.status === "stopping") {
+      liveSizeText.textContent = "To'xtatilmoqda, shu paytgacha yozilgani saqlanmoqda...";
+    } else if (data.status === "merging") {
+      liveSizeText.textContent = "Fayl yakunlanmoqda...";
+    } else if (data.status === "finished") {
+      clearInterval(livePollInterval);
+      livePollInterval = null;
+      liveRecordingWrap.classList.add("hidden");
+      liveOptions.classList.remove("hidden");
+      liveStartBtn.classList.remove("hidden");
+      liveAudioBtn.classList.remove("hidden");
+      liveStartBtn.disabled = false;
+      liveAudioBtn.disabled = false;
+      liveFileLink.href = `${base}/api/file/${jobId}`;
+      liveFileLink.classList.remove("hidden");
+    } else if (data.status === "error") {
+      clearInterval(livePollInterval);
+      livePollInterval = null;
+      showLiveError(data.error || "Efirni yozib olishda xatolik yuz berdi");
+      liveRecordingWrap.classList.add("hidden");
+      liveOptions.classList.remove("hidden");
+      liveStartBtn.classList.remove("hidden");
+      liveAudioBtn.classList.remove("hidden");
+      liveStartBtn.disabled = false;
+      liveAudioBtn.disabled = false;
+    }
+  }, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Transkript qidiruv
+// ---------------------------------------------------------------------------
+
+function showTranscriptError(msg) {
+  transcriptErrorMsgText.textContent = msg;
+  transcriptErrorMsg.classList.remove("hidden");
+}
+
+function clearTranscriptError() {
+  transcriptErrorMsg.classList.add("hidden");
+}
+
+// Moslikni <mark> bilan ajratib ko'rsatadi — innerHTML/string interpolatsiya
+// ATAYLAB ishlatilmaydi: bu matn YouTube subtitrlaridan keladi (ishonchsiz
+// manba), shuning uchun DOM tugunlari to'g'ridan-to'g'ri (textContent bilan)
+// quriladi — XSS ehtimoli umuman yo'q.
+function renderHighlightedText(container, text, query) {
+  container.textContent = "";
+  const needle = query.toLowerCase();
+  if (!needle) {
+    container.appendChild(document.createTextNode(text));
+    return;
+  }
+  const lower = text.toLowerCase();
+  let cursor = 0;
+  while (true) {
+    const foundAt = lower.indexOf(needle, cursor);
+    if (foundAt === -1) {
+      container.appendChild(document.createTextNode(text.slice(cursor)));
+      break;
+    }
+    container.appendChild(document.createTextNode(text.slice(cursor, foundAt)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(foundAt, foundAt + query.length);
+    container.appendChild(mark);
+    cursor = foundAt + query.length;
+  }
+}
+
+function renderTranscriptResults(results, query) {
+  transcriptResults.innerHTML = "";
+  results.forEach((r) => {
+    const card = document.createElement("a");
+    card.className = "transcript-result";
+    card.href = r.url;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+
+    const head = document.createElement("div");
+    head.className = "transcript-result-head";
+
+    const time = document.createElement("span");
+    time.className = "transcript-result-time";
+    time.textContent = formatDuration(r.start_time);
+
+    const title = document.createElement("span");
+    title.className = "transcript-result-title";
+    title.textContent = r.video_title;
+
+    head.appendChild(time);
+    head.appendChild(title);
+
+    const channel = document.createElement("p");
+    channel.className = "transcript-result-channel";
+    channel.textContent = r.channel_name;
+
+    const text = document.createElement("p");
+    text.className = "transcript-result-text";
+    renderHighlightedText(text, r.text, query);
+
+    card.appendChild(head);
+    card.appendChild(channel);
+    card.appendChild(text);
+    transcriptResults.appendChild(card);
+  });
+}
+
+transcriptSearchBtn.addEventListener("click", async () => {
+  const query = transcriptQueryInput.value.trim();
+  if (!query) {
+    showTranscriptError("Iltimos, qidiriladigan so'z yoki iborani kiriting.");
+    return;
+  }
+  const channelId = transcriptChannelInput.value.trim();
+
+  clearTranscriptError();
+  transcriptEmptyMsg.classList.add("hidden");
+  transcriptResults.innerHTML = "";
+  transcriptProgressWrap.classList.remove("hidden");
+  setProgress(transcriptProgressFill, 0, true);
+  transcriptSearchBtn.disabled = true;
+  transcriptSearchBtn.classList.add("loading");
+
+  try {
+    const res = await fetch("/api/transcript/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, channel_id: channelId || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+
+    if (data.results.length === 0) {
+      transcriptEmptyMsg.classList.remove("hidden");
+    } else {
+      renderTranscriptResults(data.results, query);
+    }
+  } catch (e) {
+    showTranscriptError(e.message);
+  } finally {
+    transcriptProgressWrap.classList.add("hidden");
+    transcriptSearchBtn.disabled = false;
+    transcriptSearchBtn.classList.remove("loading");
+  }
+});

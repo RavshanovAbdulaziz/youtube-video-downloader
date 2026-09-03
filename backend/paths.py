@@ -33,6 +33,7 @@ SEPARATE_TMP_DIR = os.path.join(DOWNLOADS_DIR, "_separate_tmp")
 NUMBA_CACHE_DIR = os.path.join(_base_dir(), "_numba_cache")
 LOGS_DIR = os.path.join(_base_dir(), "logs")
 CONFIG_FILE = os.path.join(_base_dir(), "config.json")
+TRANSCRIPT_DB_FILE = os.path.join(_base_dir(), "transcript_search.db")
 
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 os.makedirs(SEPARATE_TMP_DIR, exist_ok=True)

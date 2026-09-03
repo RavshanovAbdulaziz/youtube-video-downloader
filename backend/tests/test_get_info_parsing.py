@@ -155,6 +155,31 @@ class TestResolutions:
         assert [r["format_id"] for r in info["resolutions"]] == ["137"]
 
 
+class TestIsLive:
+    def test_true_for_ongoing_live_stream(self, fake_extract):
+        fake_extract({
+            "title": "T", "duration": None, "is_live": True,
+            "formats": [_video("96", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc")
+        assert info["is_live"] is True
+
+    def test_false_for_regular_video(self, fake_extract):
+        fake_extract({
+            "title": "T", "duration": 100,
+            "formats": [_video("137", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc")
+        assert info["is_live"] is False
+
+    def test_false_when_key_missing_entirely(self, fake_extract):
+        # `is_live` ba'zi extraktorlarda umuman qaytmasligi mumkin — bo'lmasa
+        # "False" deb hisoblanishi kerak, KeyError emas.
+        fake_extract({"title": "T", "duration": 100, "formats": [_video("137", 1080)]})
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc")
+        assert info["is_live"] is False
+
+
 class TestSubtitles:
     def test_manual_subs_always_included(self, fake_extract):
         fake_extract({
@@ -198,3 +223,70 @@ class TestSubtitles:
         })
         info = downloader.get_info("https://www.youtube.com/watch?v=abc")
         assert info["subtitles"] == []
+
+
+class TestLinkStartTime:
+    """Havolaga qo'shilgan vaqt belgisi (`?t=`) — YouTube ulashish oynasidagi
+    "Start at" katakchasi va transcript qidiruvimiz bergan havolalar shu
+    orqali klip slayderining boshlanish nuqtasini oldindan belgilaydi."""
+
+    @pytest.mark.parametrize("url,expected", [
+        # "Start at" katakchasi belgilanganda ulashish paneli beradigan shakl.
+        ("https://www.youtube.com/live/aqSZK-rCm7w?si=puWUloi&t=375", 375),
+        # transcript/search.py'dagi _youtube_link aynan shunday yozadi.
+        ("https://youtube.com/watch?v=abc&t=375s", 375),
+        ("https://youtu.be/abc?t=1h2m3s", 3723),
+        ("https://www.youtube.com/watch?v=abc&t=2m30s", 150),
+        ("https://www.youtube.com/watch?v=abc&t=1h", 3600),
+        # Embed havolalari `start=`, eski ko'chirmalar esa `#t=` ishlatadi.
+        ("https://www.youtube.com/embed/abc?start=90", 90),
+        ("https://www.youtube.com/watch?v=abc#t=90", 90),
+    ])
+    def test_parses_supported_forms(self, url, expected):
+        assert downloader.parse_start_time(url) == expected
+
+    @pytest.mark.parametrize("url", [
+        "https://www.youtube.com/watch?v=abc",
+        "https://www.youtube.com/watch?v=abc&t=0",
+        "https://www.youtube.com/watch?v=abc&t=",
+        "https://www.youtube.com/watch?v=abc&t=notatime",
+        "https://www.youtube.com/watch?v=abc&t=12x",
+    ])
+    def test_returns_none_without_usable_timestamp(self, url):
+        assert downloader.parse_start_time(url) is None
+
+    def test_get_info_exposes_start_time(self, fake_extract):
+        fake_extract({
+            "title": "T", "duration": 600,
+            "formats": [_video("137", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc&t=375")
+        assert info["start_time"] == 375
+
+    def test_get_info_start_time_none_without_timestamp(self, fake_extract):
+        fake_extract({
+            "title": "T", "duration": 600,
+            "formats": [_video("137", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc")
+        assert info["start_time"] is None
+
+    def test_ignores_timestamp_beyond_duration(self, fake_extract):
+        # Boshqa (uzunroq) videodan ko'chirilgan havola — dastakni video
+        # tashqarisiga surib qo'ymaslik uchun e'tiborga olinmaydi.
+        fake_extract({
+            "title": "T", "duration": 100,
+            "formats": [_video("137", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc&t=500")
+        assert info["start_time"] is None
+
+    def test_keeps_timestamp_when_duration_unknown(self, fake_extract):
+        # Jonli efir / davomiyligi noma'lum bo'lgan holat — vaqt belgisini
+        # tekshiradigan chegara yo'q, shuning uchun u shundayligicha qoladi.
+        fake_extract({
+            "title": "T", "duration": None,
+            "formats": [_video("137", 1080), _audio("140")],
+        })
+        info = downloader.get_info("https://www.youtube.com/watch?v=abc&t=42")
+        assert info["start_time"] == 42

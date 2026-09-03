@@ -10,6 +10,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import downloader
 import separator
+from transcript.api import router as transcript_router
 
 app = FastAPI(title="YouTube Downloader")
 
@@ -67,6 +68,14 @@ class SubtitleRequest(BaseModel):
     url: str
     lang_code: str
     auto: bool = False
+    title: str | None = None
+
+
+class LiveCaptureRequest(BaseModel):
+    url: str
+    video_format_id: str | None = None
+    audio_format_id: str | None = None
+    audio_only: bool = False
     title: str | None = None
 
 
@@ -158,5 +167,32 @@ def api_separate_file(job_id: str, which: str):
         background=BackgroundTask(separator.cleanup_file, job_id, which),
     )
 
+
+@app.post("/api/live/start")
+def api_live_start(req: LiveCaptureRequest):
+    # Jonli efirlarda ko'pincha alohida audio-only trek yo'q — audio_only
+    # so'ralganda video_format_id ham audio manbai sifatida ishlatilishi
+    # mumkin (downloader.start_live_capture'ga qarang), shuning uchun
+    # ikkalasidan hech bo'lmaganda bittasi yetarli.
+    if req.audio_only and not req.audio_format_id and not req.video_format_id:
+        raise HTTPException(
+            status_code=400, detail="audio_format_id yoki video_format_id kerak (audio_only=true bo'lsa)",
+        )
+    if not req.audio_only and not req.video_format_id:
+        raise HTTPException(status_code=400, detail="video_format_id kerak (audio_only=false bo'lsa)")
+    job_id = downloader.start_live_capture(
+        req.url, req.video_format_id, req.audio_format_id, req.audio_only, req.title,
+    )
+    return {"job_id": job_id}
+
+
+@app.post("/api/live/stop/{job_id}")
+def api_live_stop(job_id: str):
+    if not downloader.stop_live_capture(job_id):
+        raise HTTPException(status_code=404, detail="job topilmadi yoki allaqachon tugagan")
+    return {"status": "stopping"}
+
+
+app.include_router(transcript_router)
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

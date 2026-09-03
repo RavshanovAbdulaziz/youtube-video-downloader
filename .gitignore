@@ -18,6 +18,7 @@ cookies.txt
 backend/cookies.txt
 backend/config.json
 backend/logs/
+backend/transcript_search.db
 
 # Test uchun ildiz papkaga tushib qolishi mumkin bo'lgan media fayllar
 # (haqiqiy yuklab olingan fayllar backend/downloads/ ichida bo'lishi kerak).

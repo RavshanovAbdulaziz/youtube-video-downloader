@@ -127,9 +127,70 @@ py -3.14 -m pytest
    uchun ~35-40 soniya). Bu jarayon audio davomiyligi va GPU/CPU tezligiga
    qarab bir necha daqiqa vaqt olishi mumkin.
 
+**Vaqt oralig'i** — "Vaqt oralig'i (ixtiyoriy)" slayderi bilan videoning faqat
+bir qismini yuklab olish mumkin; tanlangan oraliq Video, Audio va Ovozni
+ajratish tugmalarining hammasiga qo'llanadi. Dastaklar chetlarda (0 va video
+oxiri) qolsa — butun video yuklanadi.
+
+Agar havolada **vaqt belgisi** bo'lsa, boshlanish nuqtasi avtomatik o'sha joyga
+qo'yiladi (tugash nuqtasi video oxirida qoladi) va slayder tagida shu haqda
+eslatma chiqadi. Manbasi ahamiyatsiz: YouTube ulashish oynasidagi "Start at"
+katakchasi (`?t=375`), "Transkript qidiruv" natijalari (`&t=375s`), embed
+havolalari (`?start=375`) va `1h2m3s` / `#t=375` shakllari ham tushuniladi.
+Vaqt belgisi video davomiyligidan oshib ketsa — e'tiborga olinmaydi.
+
 Har bir holatda progress ko'rsatiladi, tugagach fayl havolasi(lari) paydo bo'ladi.
 Yuklab olingan fayllar `backend/downloads/` papkasida vaqtincha saqlanadi va
 foydalanuvchi ularni yuklab olgach avtomatik o'chib ketadi.
+
+## Jonli efirni yozib olish
+
+Havola hozir **jonli efirda** bo'lgan video bo'lsa, oddiy Video/Audio/Subtitr
+tablari o'rniga maxsus **Efir** tabi ko'rsatiladi:
+
+1. Sifatni (va, agar mavjud bo'lsa, ovoz tilini) tanlab "Efirni yozib olishni
+   boshlash"ni bosing — shu zahotdan boshlab (efirning boshidan emas) yozib
+   olish boshlanadi.
+2. Yozib olish davom etayotganda o'tgan vaqt va hozirgacha yozilgan hajm
+   ko'rsatiladi.
+3. Istalgan payt **"To'xtatish va saqlash"** tugmasini bosib, shu paytgacha
+   yozilgan qismini yakuniy faylga aylantirish mumkin — yoki hech narsa
+   bosmasangiz, efir tabiiy tugaganda avtomatik yakunlanadi.
+
+Natija video uchun `.mkv`, faqat audio uchun `.mp3` formatida beriladi.
+
+## Transkript qidiruv
+
+Yuqoridagi "Transkript qidiruv" tab'i video **sarlavhasi** emas, video
+**ichida gapirilgan matn** (subtitr/transkript) bo'yicha so'z/ibora qidiradi —
+har bir moslik uchun kontekst matni, vaqt belgisi va shu joyga to'g'ridan-to'g'ri
+o'tadigan YouTube havolasi (`&t=...s`) beriladi.
+
+- **Kanal maydoni bo'sh** — butun YouTube bo'yicha qidiradi (`search.list` orqali
+  nomzod videolarni topib, transkriptlarini real vaqtda tekshiradi; natija
+  saqlanmaydi, faqat 24 soatlik xotira keshi ishlatiladi).
+- **Kanal ko'rsatilsa** (`@handle`, kanal havolasi yoki xom `UC...` ID) — o'sha
+  kanal videolari ichida qidiradi. Kanal birinchi qidiruvda avtomatik
+  indexlanadi (`backend/transcript_search.db`ga saqlanadi), keyingi qidiruvlar
+  shu saqlangan ma'lumot ustida tezkor ishlaydi.
+
+Ishlashi uchun **YouTube Data API v3** kaliti kerak (bepul, kunlik 10,000 unit
+kvota): [Google Cloud Console](https://console.cloud.google.com/apis/credentials)'da
+oling va `backend/.env`ga `YOUTUBE_API_KEY=...` qatorini qo'shing (`.env.example`ga
+qarang), so'ng serverni qayta ishga tushiring. Kalit bo'lmasa faqat shu tab
+ishlamaydi, qolgan hamma narsa (yuklab olish) odatdagidek ishlayveradi.
+
+Backend moduli: `backend/transcript/` (`fetch.py` — Data API + transkript
+olish, `store.py` — SQLite saqlash/qidiruv, `search.py` — asosiy mantiq,
+`api.py` — FastAPI marshruti, `cli.py` — CLI). Python'dan to'g'ridan-to'g'ri
+ham ishlatish mumkin:
+
+```python
+from transcript.search import search
+
+search("gaming setup", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")  # bitta kanal
+search("gaming setup")                                          # butun YouTube
+```
 
 ## Server ustida ishlash (Web UI + Telegram bot)
 
@@ -285,6 +346,7 @@ you tube video downloander/
 │   ├── downloader.py       # yt-dlp bilan video/audio yuklab olish logikasi
 │   ├── separator.py        # Demucs/UVR bilan audio ajratish logikasi
 │   ├── bot.py               # Telegram bot (aiogram)
+│   ├── transcript/          # "Transkript qidiruv" tab'i (fetch/store/search/api/cli)
 │   ├── requirements.txt     # Asosiy kutubxonalar
 │   ├── requirements-ai.txt  # AI (Demucs/UVR) kutubxonalari — Linux/Docker uchun
 │   ├── tests/               # pytest test to'plami (`py -3.14 -m pytest`)

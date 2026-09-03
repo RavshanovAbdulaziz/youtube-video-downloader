@@ -146,6 +146,58 @@ class TestSeparateEndpoint:
         assert res.status_code == 400
 
 
+class TestLiveEndpoints:
+    def test_start_requires_video_format_when_not_audio_only(self, client):
+        res = client.post("/api/live/start", json={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "audio_only": False,
+        })
+        assert res.status_code == 400
+        assert "video_format_id" in res.json()["detail"]
+
+    def test_start_requires_audio_format_when_audio_only(self, client):
+        res = client.post("/api/live/start", json={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "audio_only": True,
+        })
+        assert res.status_code == 400
+        assert "audio_format_id" in res.json()["detail"]
+
+    def test_start_audio_only_accepts_video_format_as_fallback_source(self, client, monkeypatch):
+        # Jonli efirlarda ko'pincha alohida audio-only trek yo'q — audio_only
+        # bilan faqat video_format_id berilishi ham qabul qilinishi kerak
+        # (downloader.start_live_capture undan audioni ajratib oladi).
+        monkeypatch.setattr(downloader, "start_live_capture", lambda *a, **k: "livejob456")
+        res = client.post("/api/live/start", json={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "video_format_id": "137",
+            "audio_only": True,
+        })
+        assert res.status_code == 200
+        assert res.json() == {"job_id": "livejob456"}
+
+    def test_start_accepts_valid_request(self, client, monkeypatch):
+        monkeypatch.setattr(downloader, "start_live_capture", lambda *a, **k: "livejob123")
+        res = client.post("/api/live/start", json={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "video_format_id": "137",
+            "audio_format_id": "140",
+        })
+        assert res.status_code == 200
+        assert res.json() == {"job_id": "livejob123"}
+
+    def test_stop_404_for_unknown_job(self, client, monkeypatch):
+        monkeypatch.setattr(downloader, "stop_live_capture", lambda job_id: False)
+        res = client.post("/api/live/stop/nosuchjob00000000000000000000")
+        assert res.status_code == 404
+
+    def test_stop_returns_stopping_status(self, client, monkeypatch):
+        monkeypatch.setattr(downloader, "stop_live_capture", lambda job_id: True)
+        res = client.post("/api/live/stop/somejob00000000000000000000000")
+        assert res.status_code == 200
+        assert res.json() == {"status": "stopping"}
+
+
 class TestInfoErrorHandling:
     def test_info_returns_400_on_extractor_failure(self, client, monkeypatch):
         def boom(url):

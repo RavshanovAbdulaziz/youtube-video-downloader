@@ -34,6 +34,18 @@
       <p id="compute-status" class="compute-status" role="button" tabindex="0"></p>
     </header>
 
+    <nav class="tabs mode-tabs" id="mode-tabs">
+      <button class="tab mode-tab active" data-mode="downloader">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Yuklab olish
+      </button>
+      <button class="tab mode-tab" data-mode="transcript">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        Transkript qidiruv
+      </button>
+    </nav>
+
+    <div class="tab-panel mode-panel active" data-mode-panel="downloader">
     <div class="input-row">
       <svg class="icon input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="url-input" type="text" placeholder="YouTube havolasini shu yerga qo'ying..." />
@@ -53,6 +65,10 @@
         <img id="thumb" src="" alt="thumbnail" />
         <div>
           <h2 id="title"></h2>
+          <span id="live-badge" class="live-badge hidden">
+            <span class="live-dot"></span>
+            JONLI EFIR
+          </span>
           <p id="duration">
             <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             <span id="duration-text"></span>
@@ -60,13 +76,17 @@
         </div>
       </div>
 
-      <div class="clip-section">
+      <div id="clip-section" class="clip-section">
         <div class="clip-section-header">
           <span class="label-text">
             <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             Vaqt oralig'i (ixtiyoriy)
           </span>
-          <span class="clip-range-readout"><span id="clip-start-label">0:00</span>&nbsp;–&nbsp;<span id="clip-end-label">0:00</span></span>
+          <span class="clip-range-readout">
+            <input type="text" id="clip-start-label" class="clip-time-input" value="0:00" inputmode="numeric" autocomplete="off" aria-label="Boshlanish vaqti" />
+            <span aria-hidden="true">&nbsp;–&nbsp;</span>
+            <input type="text" id="clip-end-label" class="clip-time-input" value="0:00" inputmode="numeric" autocomplete="off" aria-label="Tugash vaqti" />
+          </span>
         </div>
         <div class="clip-slider">
           <div class="clip-slider-track">
@@ -75,10 +95,15 @@
           <input type="range" id="clip-range-start" class="clip-thumb" min="0" max="0" value="0" step="1" />
           <input type="range" id="clip-range-end" class="clip-thumb" min="0" max="0" value="0" step="1" />
         </div>
+        <p id="clip-timestamp-note" class="clip-timestamp-note hidden"></p>
         <p class="clip-hint">Dastaklarni suring. Ikkalasi ham chetda qolsa — butun video. Tanlangan oraliq quyidagi Video/Audio/AI ajratish tugmalariga qo'llanadi.</p>
       </div>
 
       <nav class="tabs" id="tabs">
+        <button class="tab" data-tab="live">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6M4.2 4.2l4.2 4.2m7.2 7.2 4.2 4.2M1 12h6m10 0h6M4.2 19.8l4.2-4.2m7.2-7.2 4.2-4.2"/></svg>
+          Efir
+        </button>
         <button class="tab" data-tab="video">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>
           Video
@@ -96,6 +121,65 @@
           AI ajratish
         </button>
       </nav>
+
+      <div class="tab-panel" data-panel="live">
+        <p class="hint">
+          Bu video hozir <b>jonli efirda</b>. Yozib olishni boshlasangiz, shu
+          zahotdan boshlab (efirning boshidan emas) yozib olinadi va efir
+          tugagunga qadar (yoki siz "To'xtatish" tugmasini bosgunga qadar)
+          davom etadi — istalgan payt to'xtatib, shu paytgacha yozilgan
+          qismini saqlab qolishingiz mumkin.
+        </p>
+
+        <div id="live-options" class="options">
+          <label>
+            <span class="label-text"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg> Sifat (resolyutsiya)</span>
+            <select id="live-resolution-select"></select>
+          </label>
+
+          <label class="checkbox-label">
+            <input type="checkbox" id="live-audio-toggle" checked />
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+            <span>Ovoz bilan</span>
+          </label>
+
+          <label id="live-lang-label">
+            <span class="label-text"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/></svg> Til (audio trek)</span>
+            <select id="live-lang-select"></select>
+          </label>
+        </div>
+
+        <button id="live-start-btn">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg>
+          <span>Efirni yozib olishni boshlash</span>
+        </button>
+        <button id="live-audio-btn" class="secondary">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          <span>Faqat audioni yozib olish (mp3)</span>
+        </button>
+
+        <div id="live-recording-wrap" class="live-recording-wrap hidden">
+          <div class="live-recording-status">
+            <span class="live-dot"></span>
+            <span id="live-elapsed-text">0:00</span>
+            <span id="live-size-text" class="live-size-text"></span>
+          </div>
+          <button id="live-stop-btn" class="secondary">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+            <span>To'xtatish va saqlash</span>
+          </button>
+        </div>
+
+        <p id="live-error-msg" class="error hidden">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <span id="live-error-msg-text"></span>
+        </p>
+
+        <a id="live-file-link" class="hidden result-link" download>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>Yozib olingan efirni yuklab olish</span>
+        </a>
+      </div>
 
       <div class="tab-panel" data-panel="video">
         <div class="options">
@@ -207,6 +291,54 @@
         </div>
       </div>
     </section>
+    </div>
+
+    <div class="tab-panel mode-panel" data-mode-panel="transcript">
+      <p class="hint">
+        Video sarlavhasi emas — video <b>ichida gapirilgan matn</b> (subtitr/transkript)
+        bo'yicha qidiradi. Kanal maydonini bo'sh qoldirsangiz butun YouTube bo'yicha
+        (nomzod videolarni topib, transkriptlarini real vaqtda tekshirib) qidiradi —
+        bu birmuncha sekinroq. Kanal ko'rsatsangiz, birinchi qidiruvda o'sha kanal
+        indexlanadi (saqlanadi) va keyingi qidiruvlar tezkor bo'ladi.
+      </p>
+
+      <div class="options">
+        <label>
+          <span class="label-text">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            Qidiriladigan so'z yoki ibora
+          </span>
+          <input type="text" id="transcript-query-input" placeholder="Masalan: gaming setup" />
+        </label>
+
+        <label>
+          <span class="label-text">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Kanal (ixtiyoriy)
+          </span>
+          <input type="text" id="transcript-channel-input" placeholder="@handle, kanal havolasi yoki UC... ID (bo'sh — butun YouTube)" />
+        </label>
+      </div>
+
+      <button id="transcript-search-btn">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <span>Qidirish</span>
+      </button>
+
+      <p id="transcript-error-msg" class="error hidden">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        <span id="transcript-error-msg-text"></span>
+      </p>
+
+      <div id="transcript-progress-wrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="transcript-progress-fill" class="progress-fill"></div></div>
+        <p id="transcript-progress-text" class="progress-text">Qidirilmoqda...</p>
+      </div>
+
+      <p id="transcript-empty-msg" class="hint hidden">Hech narsa topilmadi. Boshqa so'z bilan urinib ko'ring.</p>
+
+      <div id="transcript-results" class="transcript-results"></div>
+    </div>
   </main>
 
   <script src="app.js"></script>

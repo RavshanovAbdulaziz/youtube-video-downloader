@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import math
 import os
 import re
@@ -9,6 +10,8 @@ import tempfile
 import threading
 import time
 import uuid
+from logging.handlers import RotatingFileHandler
+from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
 from yt_dlp.cookies import extract_cookies_from_browser
@@ -20,6 +23,21 @@ import pot_server
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 DOWNLOADS_DIR = paths.DOWNLOADS_DIR
+
+# Konsolsiz tray rejimida (launcher/tray_app.py) sys.stdout/stderr devnull'ga
+# yo'naltiriladi — ya'ni pastdagi print(..., file=sys.stderr) chaqiruvlari va
+# yt-dlp'ning o'z ogohlantirishlari hech qayerda ko'rinmay qoladi. Shu fayl
+# ISHGA TUSHIRISH usulidan qat'i nazar doim yoziladi, shuning uchun tray
+# tugmasidagi "Loglar papkasi" orqali har doim tekshirish mumkin.
+_file_logger = logging.getLogger("downloader")
+_file_logger.setLevel(logging.INFO)
+_file_logger.propagate = False
+if not _file_logger.handlers:
+    _file_handler = RotatingFileHandler(
+        os.path.join(paths.LOGS_DIR, "downloader.log"), maxBytes=1_000_000, backupCount=2, encoding="utf-8",
+    )
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    _file_logger.addHandler(_file_handler)
 
 # Datacenter IP'lardan (masalan, bulutli serverlardan) kelayotgan so'rovlarni,
 # va tobora ko'proq holatlarda hatto rezidensial IP'lardan kelgan so'rovlarni
@@ -145,6 +163,20 @@ def _browser_cookies_usable() -> bool:
     return _browser_cookies_ok
 
 
+def _auth_context_str() -> str:
+    """Diagnostika uchun qisqa satr: xato yozilgan payt cookie/PO token holati
+    qanday edi. Shu orqali log faylidan "brauzer/fayl cookie ishlamayapti"mi
+    yoki "PO token yo'q"mi kabi savollarga qazishsiz javob topish mumkin."""
+    if _browser_cookies_usable():
+        cookies = f"brauzer ({COOKIES_FROM_BROWSER})"
+    elif _cookies_file_usable():
+        cookies = "fayl"
+    else:
+        cookies = "yo'q (eskirgan)" if _cookies_invalid else "yo'q"
+    pot_active = bool(POT_BASE_URL) or pot_server._is_up()
+    return f"cookie={cookies}, PO-token={'ishlayapti' if pot_active else 'yoʻq'}"
+
+
 class _YdlLogger:
     """yt-dlp uchun logger — `no_warnings=True` bo'lganda ham ogohlantirishlar
     loggerga baribir uzatiladi, cookie eskirganini aynan shu yerda ushlaymiz.
@@ -163,9 +195,11 @@ class _YdlLogger:
         # TypeError bo'lardi.
         if _COOKIES_INVALID_MARKER in msg:
             _mark_cookies_invalid()
+        _file_logger.warning(msg)
 
     def error(self, msg):
         print(msg, file=sys.stderr)
+        _file_logger.error(msg)
 
 
 _LOGGER = _YdlLogger()
@@ -180,19 +214,37 @@ def ydl_opts_ctx(extra: dict):
     asta-sekin buzilib boradi. Asosiy fayl hech qachon o'zgarmaydi.
     """
     opts = {"js_runtimes": {"node": {}}, "logger": _LOGGER, **extra}
-    # "web"/"web_safari" mijozlari cookie (login) bilan so'ralganda YouTube
-    # SABR streamingni majburlaydi va ko'pchilik DASH formatlarini (jumladan
-    # audio-only treklarni) URL'siz qoldiradi — natijada audio_tracks bo'sh
-    # chiqadi va segment (start/end) yuklab olish uchun kerakli byte-range
-    # so'rovlar ishlamay qoladi. "web_embedded" bunday emas — cookie bilan
-    # ham to'liq DASH formatlarni beradi. MUHIM: avval "mweb" tanlangan edi,
-    # lekin u ARXIVLANGAN JONLI EFIR (tugagan livestream) yozuvlarida taxminan
-    # 32-38 MB'dan keyin har doim 403 qaytaradi (butunlay yangi URL/sessiya
-    # bilan ham) — "web_embedded" esa xuddi shu formatni (~1 GB'dan ko'proq
-    # tekshirildi) devorsiz beradi. "mweb" ikkinchi variant sifatida
-    # qoldirilgan — ba'zi videolarda joylashtirish (embedding) o'chirilgan
-    # bo'lsa, "web_embedded" butunlay ishlamay qoladi, "mweb" esa ishlaydi.
-    opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded", "mweb"]}}
+    # Mijozlar (player_client) TARTIBI muhim: bir xil format_id bir nechta
+    # mijozdan kelsa, yt-dlp shu ro'yxatda BIRINCHI turgan mijozning URL'ini
+    # oladi (o'lchandi: ro'yxat teskari qilinganda URL'dagi `c=` parametri
+    # ham almashadi).
+    #
+    # 1) "tv_simply" — asosiy. Sabablari (2026-08-31, kop-95Th_ZQ va boshqa
+    #    videolarda o'lchandi):
+    #    * "web_embedded"/"mweb" bergan URL'lar BIRINCHI ~10 MB'dan keyin
+    #      muntazam "HTTP Error 403: Forbidden" qaytaradi — bu yt-dlp'ning o'z
+    #      yuklovchisida ham, pastdagi `_fetch_range` bo'laklarida ham bir xil
+    #      takrorlandi, ya'ni sabab yuklash usulida emas, URL'ning o'zida.
+    #      "tv_simply" xuddi shu formatni (137, ~59 MB) oxirigacha beradi.
+    #    * Tezlik ham ~3 barobar yuqori: o'sha faylda 62 MB/s (tv_simply)
+    #      va 17 MB/s (web_embedded) — CDN eski mijozlarning URL'ini
+    #      sekinlashtiradi.
+    #    * To'liq DASH to'plamini beradi (video-only + audio-only, mp4 va
+    #      webm), ya'ni audio_tracks va byte-range (start/end) yuklash
+    #      avvalgidek ishlaydi.
+    #    * yt-dlp'da bu mijoz uchun SUPPORTS_COOKIES=False — cookie umuman
+    #      yuborilmaydi. Shu sababli u "web"/"web_safari"'dagi muammoga ham
+    #      duch kelmaydi (ular cookie bilan so'ralganda YouTube SABR'ni
+    #      majburlaydi va ko'p DASH formatlarni URL'siz qoldiradi), va
+    #      cookies.txt eskirganda ham bemalol ishlaydi. Buning evazi: yosh
+    #      cheklovli / yopiq videolarni u ocha olmaydi — ular uchun pastdagi
+    #      ikki mijoz zaxira bo'lib qoladi.
+    #    * GVS PO token TALAB qiladi — bu bgutil provideri orqali beriladi
+    #      (pastdagi POT_BASE_URL / pot_server'ga qarang).
+    # 2) "web_embedded" — zaxira: cookie (login) kerak bo'lgan videolar uchun.
+    # 3) "mweb" — oxirgi zaxira: ba'zi videolarda joylashtirish (embedding)
+    #    o'chirilgan bo'lsa, "web_embedded" butunlay ishlamay qoladi.
+    opts["extractor_args"] = {"youtube": {"player_client": ["tv_simply", "web_embedded", "mweb"]}}
     pot_base_url = POT_BASE_URL or pot_server.ensure_running()
     if pot_base_url:
         opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
@@ -261,6 +313,12 @@ jobs_lock = threading.Lock()
 # Bu muammoni butunlay YO'QOTMAYDI — imkoniyatni oshiradi xolos. Har bir
 # urinish noldan boshlanadi, shuning uchun urinishlar soni ataylab kichik:
 # yiqilgan katta faylni 5 marta qayta tortish trafikni behuda sarflaydi.
+#
+# QO'SHIMCHA QATLAM: pastdagi `_fetch_chunk` endi har bir 8 MB'lik Range
+# so'rovini ALOHIDA qayta so'raydi (CHUNK_RETRY_ATTEMPTS) — chunki 403 asosan
+# bitta bo'lakka xos tasodif. Shu tufayli bu (butun faylni noldan boshlaydigan)
+# tashqi qatlamga endi faqat bo'lak darajasidagi qayta urinish ham tugagan
+# (yoki boshqa transient xato yuz bergan) holatlardagina murojaat qilinadi.
 DOWNLOAD_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 2
 
@@ -296,7 +354,14 @@ def _with_retries(job_id: str, action):
             return action()
         except Exception as e:
             if attempt == DOWNLOAD_ATTEMPTS or not _is_transient(e):
+                _file_logger.error(
+                    "job %s: butun yuklash %d-urinishda berilib qo'yildi: %s", job_id, attempt, e,
+                )
                 raise
+            _file_logger.warning(
+                "job %s: %d/%d-urinish vaqtinchalik xato bilan tugadi, noldan qayta boshlanmoqda: %s",
+                job_id, attempt, DOWNLOAD_ATTEMPTS, e,
+            )
             _discard_partials(job_id)
             # Holatni "downloading"da qoldiramiz — frontend faqat ma'lum
             # holatlarni biladi va qayta urinish foydalanuvchi uchun oddiy
@@ -375,6 +440,53 @@ def _audio_codec_rank(acodec: str | None) -> int:
     return 0 if acodec.startswith("mp4a") else 1
 
 
+# YouTube havolasidagi vaqt belgisi ("Start at" katakchasi belgilanganda
+# ulashish paneli `?t=375` qo'shadi, transcript qidiruvimiz `&t=375s` beradi,
+# eski/qo'lda yozilgan havolalarda esa `1h2m3s` yoki `#t=90` uchraydi).
+# Barchasi bir xil ko'rinishga — soniyaga — keltiriladi.
+_TIMESTAMP_UNITS_RE = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", re.IGNORECASE)
+
+
+def _parse_timestamp_value(value: str) -> int | None:
+    """Bitta `t=` qiymatini soniyaga aylantiradi; tanilmasa — None."""
+    value = str(value).strip().lower()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    m = _TIMESTAMP_UNITS_RE.fullmatch(value)
+    if not m or not any(m.groups()):
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in m.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def parse_start_time(url: str) -> int | None:
+    """Havolaga qo'shilgan boshlanish nuqtasini soniyalarda qaytaradi.
+
+    `?t=`, `&start=` (embed havolalari) va `#t=` (fragment) shakllarini
+    tushunadi. Vaqt belgisi bo'lmasa yoki noldan katta bo'lmasa — None.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    candidates: list[str] = []
+    query = parse_qs(parsed.query)
+    for key in ("t", "start", "time_continue"):
+        candidates.extend(query.get(key, []))
+    # `#t=90` — fragment qismidagi eski shakl (parse_qs uni o'zi ko'rmaydi).
+    if "=" in parsed.fragment:
+        candidates.extend(parse_qs(parsed.fragment).get("t", []))
+
+    for raw in candidates:
+        seconds = _parse_timestamp_value(raw)
+        if seconds:
+            return seconds
+    return None
+
+
 def get_info(url: str) -> dict:
     with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -448,14 +560,24 @@ def get_info(url: str) -> dict:
         for track in sorted(seen_langs.values(), key=lambda a: (not a["is_original"], a["label"]))
     ]
 
+    # Havoladagi vaqt belgisi klip slayderining boshlanish dastagini oldindan
+    # qo'yish uchun ishlatiladi. Video davomiyligidan tashqariga chiqib ketgan
+    # qiymat (masalan, boshqa videodan ko'chirilgan havola) e'tiborga olinmaydi.
+    duration = info.get("duration")
+    start_time = parse_start_time(url)
+    if start_time is not None and duration and start_time >= duration:
+        start_time = None
+
     return {
         "title": info.get("title"),
         "thumbnail": info.get("thumbnail"),
-        "duration": info.get("duration"),
+        "duration": duration,
+        "start_time": start_time,
         "resolutions": resolutions,
         "audio_tracks": audio_tracks,
         "subtitles": _build_subtitles(info),
         "has_video_only_streams": bool(video_only),
+        "is_live": bool(info.get("is_live")),
     }
 
 
@@ -581,6 +703,33 @@ def _sidx_plan(ydl, fmt: dict, start_time: float, end_time: float | None) -> dic
     return {"header": probe[:moov_end], "byte_start": byte_start, "byte_end": byte_end}
 
 
+# Bitta 8 MB'lik bo'lak uchun qayta urinishlar soni. DOWNLOAD_ATTEMPTS'dan
+# (butun faylni noldan boshlaydi) FARQLI o'laroq, bu — aynan shu bitta Range
+# so'rovini joyida qayta so'raydi. Sabab: yuqoridagi o'lchovga ko'ra 403 har
+# bir bo'lak uchun MUSTAQIL TASODIF — ya'ni 1.3 GB'lik faylda ~160 ta bo'lak
+# bo'lsa, bittasining tasodifan yiqilishi ehtimoli yuqori, lekin BUTUN faylni
+# shuning uchun noldan qayta tortish (avvalgi xatti-harakat) shart emas va
+# katta fayllarda trafikni behuda sarflaydi. Bo'lak darajasida qayta urinish
+# arzon (atigi bir necha soniyalik ma'lumot) va tezkor.
+CHUNK_RETRY_ATTEMPTS = 5
+CHUNK_RETRY_DELAY_SECONDS = 1
+
+
+def _fetch_chunk(ydl, url: str, headers: dict, byte_start: int, byte_end: int) -> bytes:
+    req = Request(url, headers={**headers, "Range": f"bytes={byte_start}-{byte_end}"})
+    for attempt in range(1, CHUNK_RETRY_ATTEMPTS + 1):
+        try:
+            return ydl.urlopen(req).read()
+        except Exception as e:
+            if attempt == CHUNK_RETRY_ATTEMPTS or not _is_transient(e):
+                _file_logger.warning(
+                    "bo'lak bytes=%d-%d %d urinishdan keyin muvaffaqiyatsiz: %s",
+                    byte_start, byte_end, attempt, e,
+                )
+                raise
+            time.sleep(CHUNK_RETRY_DELAY_SECONDS)
+
+
 def _fetch_range(ydl, fmt: dict, byte_start: int, byte_end: int | None, out, on_bytes) -> None:
     """`byte_start`dan (`byte_end` berilmagan bo'lsa — fayl oxirigacha) `out`
     (ochiq fayl) ga yt-dlp'ning o'z (autentifikatsiyalangan) HTTP mijozi bilan,
@@ -597,8 +746,7 @@ def _fetch_range(ydl, fmt: dict, byte_start: int, byte_end: int | None, out, on_
     while byte_end is None or pos < byte_end:
         chunk_end = (min(pos + FFMPEG_RANGE_CHUNK, byte_end) - 1) if byte_end is not None \
             else (pos + FFMPEG_RANGE_CHUNK - 1)
-        req = Request(url, headers={**headers, "Range": f"bytes={pos}-{chunk_end}"})
-        data = ydl.urlopen(req).read()
+        data = _fetch_chunk(ydl, url, headers, pos, chunk_end)
         if not data:
             break
         out.write(data)
@@ -608,10 +756,13 @@ def _fetch_range(ydl, fmt: dict, byte_start: int, byte_end: int | None, out, on_
             break  # server so'ralgandan kamroq qaytardi — fayl shu yerda tugadi
 
 
-def _run_ffmpeg(args: list[str]) -> None:
+def _ffmpeg_exe() -> str:
     ffmpeg_dir = paths.bundled_ffmpeg_dir()
-    exe = os.path.join(ffmpeg_dir, "ffmpeg.exe") if ffmpeg_dir else "ffmpeg"
-    result = subprocess.run([exe, *args], capture_output=True)
+    return os.path.join(ffmpeg_dir, "ffmpeg.exe") if ffmpeg_dir else "ffmpeg"
+
+
+def _run_ffmpeg(args: list[str]) -> None:
+    result = subprocess.run([_ffmpeg_exe(), *args], capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg xatosi: {result.stderr.decode(errors='ignore')[-800:]}")
 
@@ -759,6 +910,10 @@ def start_download(url: str, video_format_id: str | None, audio_format_id: str |
             with jobs_lock:
                 jobs[job_id]["status"] = "error"
                 jobs[job_id]["error"] = str(e)
+            _file_logger.error(
+                "job %s (yuklash) yiqildi — url=%s video_fmt=%s audio_fmt=%s %s",
+                job_id, url, video_format_id, audio_format_id, _auth_context_str(), exc_info=True,
+            )
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
@@ -808,9 +963,236 @@ def start_subtitle_download(url: str, lang_code: str, auto: bool, title: str | N
             with jobs_lock:
                 jobs[job_id]["status"] = "error"
                 jobs[job_id]["error"] = str(e)
+            _file_logger.error(
+                "job %s (subtitr) yiqildi — url=%s lang=%s auto=%s %s",
+                job_id, url, lang_code, auto, _auth_context_str(), exc_info=True,
+            )
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
+
+
+# ---------------------------------------------------------------------------
+# Jonli efirni ("live" translyatsiyani) yozib olish
+# ---------------------------------------------------------------------------
+#
+# Tugagan videolardan farqli o'laroq, davom etayotgan jonli efirning umumiy
+# davomiyligi va fayl hajmi oldindan noma'lum — yuqoridagi `_download_clip`
+# (aniq bayt oralig'iga tayanadigan) usul bu yerda ishlamaydi. Shuning uchun
+# tanlangan formatlarning to'g'ridan-to'g'ri (googlevideo) manzillarini
+# o'zimiz aniqlab, ffmpeg'ni TO'G'RIDAN-TO'G'RI (yt-dlp'ning o'z yuklovchisi
+# orqali emas) chaqiramiz: yt-dlp jonli efirlarni ham aynan shunday (ffmpeg'ga
+# manifest URL'ini uzatib) yuklaydi, lekin Popen'ni o'z ichida yashiradi —
+# bizga esa jarayonni istalgan payt TO'XTATISH imkoniyati kerak (foydalanuvchi
+# "Yozishni to'xtatish" tugmasini bosganda), shuning uchun uni o'zimiz
+# boshqaramiz.
+#
+# Yozib olish paytida chiqish sifatida MPEG-TS ishlatiladi (pastdagi
+# `capture_path`ga qarang) — u MP4/MKV'dan farqli o'laroq soniyalab
+# ma'lumotni ichki buferда yig'ib turmaydi, shuning uchun jarayon istalgan
+# payt to'xtatilsa (yoki majburan o'chirilsa) ham, shu paytgacha yozilgan
+# qism darhol ochiladigan (buzilmagan) fayl bo'lib qoladi. Tugagach, u
+# foydalanuvchiga qulayroq yakuniy formatga (video: MKV, audio: MP3) arzon
+# remux orqali o'tkaziladi.
+live_processes: dict[str, subprocess.Popen] = {}
+live_processes_lock = threading.Lock()
+
+_FFMPEG_OUT_TIME_RE = re.compile(r"^out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _ffmpeg_header_args(headers: dict | None) -> list[str]:
+    if not headers:
+        return []
+    header_block = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    return ["-headers", header_block]
+
+
+def _spawn_ffmpeg(args: list[str]) -> subprocess.Popen:
+    # Alohida, mustaqil funksiya sifatida — shu bilan testlar `subprocess.
+    # Popen`ning o'zini (pot_server.py ham foydalanadigan umumiy modulni)
+    # emas, aynan shu chaqiruvni soxtalashtirishi mumkin.
+    return subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, text=True, errors="ignore", bufsize=1,
+    )
+
+
+def start_live_capture(url: str, video_format_id: str | None, audio_format_id: str | None,
+                        audio_only: bool, title: str | None = None) -> str:
+    job_id = uuid.uuid4().hex
+    with jobs_lock:
+        jobs[job_id] = {"status": "queued", "elapsed": 0, "downloaded_bytes": 0, "created_at": time.time()}
+
+    def run():
+        stderr_tail: list[str] = []
+        try:
+            with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+
+            if not info.get("is_live"):
+                raise RuntimeError("Bu video hozir jonli efirda emas — oddiy yuklab olishdan foydalaning")
+
+            # Jonli efirlarda alohida audio-only format ko'pincha umuman
+            # mavjud emas (faqat "progressive" — video ichiga audio
+            # qo'shilgan — formatlar beriladi). Shuning uchun audio_only
+            # so'ralganda: alohida audio-only trek berilgan bo'lsa o'shani,
+            # aks holda tanlangan video formatni manba sifatida olamiz (undan
+            # pastda "-vn" bilan faqat audio kanali ajratiladi).
+            needed_ids = [fid for fid in (audio_format_id, video_format_id) if fid][:1] if audio_only \
+                else [fid for fid in (video_format_id, audio_format_id) if fid]
+            if not needed_ids:
+                raise RuntimeError("video_format_id yoki audio_format_id kerak")
+            fmts = {fid: _select_format(info, fid) for fid in needed_ids}
+
+            # Yakuniy (foydalanuvchiga taqdim etiladigan) format — video uchun
+            # MKV, faqat audio uchun MP3. Video yozib olinayotganda esa
+            # to'g'ridan-to'g'ri MKV'ga EMAS, MPEG-TS'ga ("capture_path")
+            # yoziladi: MKV muxer'i diskka yozishdan oldin bir necha soniyalik
+            # "cluster"larni ichki bufer sifatida yig'ib turadi — foydalanuvchi
+            # yozib olish boshlangandan ko'p o'tmay "To'xtatish"ni bossa, hali
+            # birorta cluster ham diskka tushmagan (butunlay bo'sh/yaroqsiz
+            # fayl) bo'lib chiqishi mumkin edi. MPEG-TS paket-bo'yicha
+            # (188 bayt) yoziladi va bunday muammoga chalinmaydi. Yozib olish
+            # tugagach, arzon (qayta kodlashsiz) remux orqali yakuniy formatga
+            # o'tkaziladi.
+            out_ext = "mp3" if audio_only else "mkv"
+            capture_ext = "mp3" if audio_only else "ts"
+            capture_path = os.path.join(DOWNLOADS_DIR, f"{job_id}.{capture_ext}")
+
+            args = [_ffmpeg_exe(), "-y", "-nostdin", "-loglevel", "warning", "-progress", "pipe:1"]
+            input_idx = 0
+            video_idx = audio_idx = None
+            if audio_only:
+                f = fmts[needed_ids[0]]
+                args += _ffmpeg_header_args(f.get("http_headers"))
+                args += ["-i", f["url"]]
+                audio_idx, input_idx = input_idx, input_idx + 1
+            else:
+                if video_format_id:
+                    f = fmts[video_format_id]
+                    args += _ffmpeg_header_args(f.get("http_headers"))
+                    args += ["-i", f["url"]]
+                    video_idx, input_idx = input_idx, input_idx + 1
+                if audio_format_id:
+                    f = fmts[audio_format_id]
+                    args += _ffmpeg_header_args(f.get("http_headers"))
+                    args += ["-i", f["url"]]
+                    audio_idx, input_idx = input_idx, input_idx + 1
+
+            # `-flush_packets 1`: chiqish oqimini har bir paketdan keyin
+            # majburan diskka bo'shatadi (aks holda muxer/OS bufer bir necha
+            # soniyalik ma'lumotni xotirada ushlab turishi mumkin edi).
+            if audio_only:
+                # `-map` YO'Q: manba audio-only bo'lsa ham, video ichiga
+                # qo'shilgan (progressive) bo'lsa ham, "-vn" ikkala holatda
+                # ham to'g'ri faqat-audio chiqish beradi.
+                args += ["-vn", "-codec:a", "libmp3lame", "-q:a", "2",
+                         "-flush_packets", "1", "-f", "mp3"]
+            else:
+                # `-map` FAQAT ikkita alohida (video-only + audio-only)
+                # manba birlashtirilayotganda ishlatiladi. Jonli efirlarda
+                # ko'pincha alohida audio-only format umuman bo'lmaydi —
+                # tanlangan video format o'zi ichida audio bilan birga keladi
+                # ("progressive"). Bunday holda `-map`ni umuman qo'llamaymiz:
+                # yagona kirish (video_idx)dagi BARCHA oqimlar (video + unga
+                # ichki qo'shilgan audio, bo'lsa) o'zi avtomatik chiqishga
+                # tushadi — aks holda `-map {video_idx}:v:0` audioni
+                # (mavjud bo'lsa ham) chiqarib tashlab, ovozsiz fayl berardi.
+                if video_idx is not None and audio_idx is not None:
+                    args += ["-map", f"{video_idx}:v:0", "-map", f"{audio_idx}:a:0"]
+                args += ["-c", "copy", "-flush_packets", "1", "-f", "mpegts"]
+            args.append(capture_path)
+
+            with jobs_lock:
+                jobs[job_id]["status"] = "downloading"
+
+            proc = _spawn_ffmpeg(args)
+            with live_processes_lock:
+                live_processes[job_id] = proc
+
+            def drain_stderr():
+                for line in proc.stderr:
+                    stderr_tail.append(line)
+                    del stderr_tail[:-40]
+
+            threading.Thread(target=drain_stderr, daemon=True).start()
+
+            for line in proc.stdout:
+                m = _FFMPEG_OUT_TIME_RE.match(line.strip())
+                if not m:
+                    continue
+                h, mnt, s = m.groups()
+                elapsed = int(h) * 3600 + int(mnt) * 60 + float(s)
+                size = os.path.getsize(capture_path) if os.path.exists(capture_path) else 0
+                with jobs_lock:
+                    jobs[job_id]["elapsed"] = elapsed
+                    jobs[job_id]["downloaded_bytes"] = size
+
+            returncode = proc.wait()
+            with live_processes_lock:
+                live_processes.pop(job_id, None)
+
+            if not os.path.exists(capture_path) or os.path.getsize(capture_path) == 0:
+                detail = "".join(stderr_tail[-5:]).strip()
+                raise RuntimeError(f"Efirni yozib olib bo'lmadi (ffmpeg kodi {returncode}): {detail}")
+
+            # Yakuniy formatga (video: MKV, audio: metama'lumoti tozalangan
+            # MP3) arzon (qayta kodlashsiz, faqat oqim ko'chirish) remux
+            # orqali o'tkazamiz. Muvaffaqiyatsiz bo'lsa (masalan juda qisqa —
+            # bir nechta paketdan iborat — segment) baribir dastlabki (to'liq
+            # ochiladigan) faylni o'z formatida (masalan .ts) saqlab qolamiz.
+            with jobs_lock:
+                jobs[job_id]["status"] = "merging"
+            remux_path = os.path.join(DOWNLOADS_DIR, f"{job_id}.remux.{out_ext}")
+            final_source, final_ext = capture_path, capture_ext
+            try:
+                _run_ffmpeg(["-i", capture_path, "-c", "copy", "-y", remux_path])
+                os.remove(capture_path)
+                final_source, final_ext = remux_path, out_ext
+            except Exception:
+                with contextlib.suppress(OSError):
+                    os.remove(remux_path)
+
+            final_path = final_source
+            if title:
+                desired_path = _unique_path(DOWNLOADS_DIR, _sanitize_filename(title), f".{final_ext}")
+                os.replace(final_source, desired_path)
+                final_path = desired_path
+
+            with jobs_lock:
+                jobs[job_id]["status"] = "finished"
+                jobs[job_id]["file"] = final_path
+        except Exception as e:
+            with live_processes_lock:
+                live_processes.pop(job_id, None)
+            with jobs_lock:
+                jobs[job_id]["status"] = "error"
+                jobs[job_id]["error"] = str(e)
+            _file_logger.error(
+                "job %s (jonli yozib olish) yiqildi — url=%s %s",
+                job_id, url, _auth_context_str(), exc_info=True,
+            )
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
+def stop_live_capture(job_id: str) -> bool:
+    """Yozib olishni hozircha to'xtatadi va shu paytgacha yozilganini
+    yakuniy faylga aylantiradi (`run()` davom etib, xuddi efir tabiiy
+    tugagandagidek `finished` holatiga o'tkazadi). `False` — job topilmadi
+    yoki allaqachon tugagan."""
+    with live_processes_lock:
+        proc = live_processes.get(job_id)
+    if not proc or proc.poll() is not None:
+        return False
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job and job.get("status") == "downloading":
+            job["status"] = "stopping"
+    proc.terminate()
+    return True
 
 
 def cleanup_job(job_id: str) -> None:

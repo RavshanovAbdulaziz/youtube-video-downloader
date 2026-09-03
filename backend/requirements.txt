@@ -4,6 +4,10 @@ yt-dlp[default]
 bgutil-ytdlp-pot-provider
 aiogram
 
+# Transkript qidiruv tab'i (backend/transcript/) uchun.
+youtube-transcript-api
+google-api-python-client
+
 # "Ovozni ajratish" (AI: Demucs / UVR) funksiyasi ixtiyoriy va bu faylga
 # kiritilmagan — uni Windows'da o'rnatish uchun loyiha papkasidagi
 # install_ai.bat (yoki setup.bat) faylini ishga tushiring. Serverga
