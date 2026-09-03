@@ -1,8 +1,14 @@
 """transcript/fetch.py: kanal identifikatorini ajratish va Data API v3
 chaqiruvlari — haqiqiy google-api-python-client ishlatilmaydi, `_client()`
-o'rniga soxta (fake) YouTube resurs obyekti monkeypatch qilinadi."""
+o'rniga soxta (fake) YouTube resurs obyekti monkeypatch qilinadi.
+Transkript olish (`fetch_transcript`) uchun esa `downloader.ydl_opts_ctx`
+va `yt_dlp.YoutubeDL` soxtalashtiriladi — na tarmoqqa, na haqiqiy yt-dlp/PO
+token serveriga tegilmaydi."""
+import contextlib
+import io
+import json
+
 import pytest
-from youtube_transcript_api._errors import IpBlocked
 
 from transcript import fetch
 
@@ -181,6 +187,95 @@ class TestListChannelVideos:
 
         assert [v["video_id"] for v in videos] == ["id1"]
 
+    def test_extracts_published_at_date(self, monkeypatch):
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(playlist_items=lambda **kw: {
+            "items": [{
+                "snippet": {"title": "V1", "resourceId": {"kind": "youtube#video", "videoId": "id1"}},
+                "contentDetails": {"videoPublishedAt": "2023-02-15T10:30:00Z"},
+            }],
+        }))
+
+        videos = fetch.list_channel_videos("UUxxxx")
+
+        assert videos[0]["published_at"] == "2023-02-15"
+
+    def test_falls_back_to_snippet_published_at_when_content_details_missing(self, monkeypatch):
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(playlist_items=lambda **kw: {
+            "items": [{
+                "snippet": {
+                    "title": "V1", "publishedAt": "2023-05-01T00:00:00Z",
+                    "resourceId": {"kind": "youtube#video", "videoId": "id1"},
+                },
+            }],
+        }))
+
+        videos = fetch.list_channel_videos("UUxxxx")
+
+        assert videos[0]["published_at"] == "2023-05-01"
+
+
+class TestListChannelVideosDateRange:
+    def _item(self, video_id, published_date):
+        return {
+            "snippet": {"title": video_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}},
+            "contentDetails": {"videoPublishedAt": f"{published_date}T00:00:00Z"},
+        }
+
+    def test_excludes_videos_newer_than_published_before(self, monkeypatch):
+        # Playlist eng yangi-birinchi: "gacha" chegarasidan yangiroqlarini
+        # o'tkazib yuborib, sahifalashni DAVOM ETTIRISH kerak (eskiroqlar
+        # hali oldinda bo'lishi mumkin).
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(playlist_items=lambda **kw: {
+            "items": [self._item("too_new", "2023-06-01"), self._item("in_range", "2023-03-01")],
+        }))
+
+        videos = fetch.list_channel_videos("UUxxxx", published_before="2023-04-01")
+
+        assert [v["video_id"] for v in videos] == ["in_range"]
+
+    def test_stops_pagination_once_older_than_published_after(self, monkeypatch):
+        pages = {
+            None: {
+                "items": [self._item("in_range", "2023-02-01"), self._item("too_old", "2022-01-01")],
+                "nextPageToken": "page2",
+            },
+            "page2": {
+                # Bu sahifa umuman so'ralmasligi kerak — birinchi sahifada
+                # allaqachon `published_after`dan eskiroq videoga yetilgan.
+                "items": [self._item("never_reached", "2021-01-01")],
+            },
+        }
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(
+            playlist_items=lambda **kw: pages[kw.get("pageToken")]
+        ))
+
+        videos = fetch.list_channel_videos("UUxxxx", published_after="2023-01-01")
+
+        assert [v["video_id"] for v in videos] == ["in_range"]
+
+    def test_max_results_caps_matched_videos_not_scanned_items(self, monkeypatch):
+        # Sana oralig'ida `max_results` KO'RIB CHIQILGAN emas, MOS KELGAN
+        # videolar soniga chegara — bitta sahifada mos kelmagan (juda yangi)
+        # elementlar bo'lsa ham, keyingi sahifa hali so'ralishi kerak.
+        pages = {
+            None: {
+                "items": [self._item("too_new", "2023-06-01")],
+                "nextPageToken": "page2",
+            },
+            "page2": {
+                "items": [self._item("match1", "2023-03-01"), self._item("match2", "2023-02-01")],
+            },
+        }
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(
+            playlist_items=lambda **kw: pages[kw.get("pageToken")]
+        ))
+
+        videos = fetch.list_channel_videos(
+            "UUxxxx", max_results=1, published_after="2023-01-01", published_before="2023-04-01",
+        )
+
+        assert [v["video_id"] for v in videos] == ["match1"]
+
 
 class TestSearchVideos:
     def test_returns_parsed_candidates(self, monkeypatch):
@@ -201,6 +296,28 @@ class TestSearchVideos:
         fetch.search_videos("q", max_results=500)
 
         assert seen["maxResults"] == 50
+
+    def test_passes_published_date_range_as_rfc3339_to_data_api(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(
+            search=lambda **kw: seen.update(kw) or {"items": []}
+        ))
+
+        fetch.search_videos("q", published_after="2023-01-01", published_before="2023-03-31")
+
+        assert seen["publishedAfter"] == "2023-01-01T00:00:00Z"
+        assert seen["publishedBefore"] == "2023-03-31T23:59:59Z"
+
+    def test_omits_date_params_when_not_given(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(
+            search=lambda **kw: seen.update(kw) or {"items": []}
+        ))
+
+        fetch.search_videos("q")
+
+        assert "publishedAfter" not in seen
+        assert "publishedBefore" not in seen
 
     def test_unescapes_html_entities_in_title_and_channel_name(self, monkeypatch):
         monkeypatch.setattr(fetch, "_client", lambda: FakeYouTube(search=lambda **kw: {
@@ -273,58 +390,143 @@ class TestClientConfig:
         fetch._client.cache_clear()
 
 
+class _FakeYdl:
+    """`yt_dlp.YoutubeDL`ning testlar uchun yengil o'rnini bosuvchisi —
+    `extract_info` berilgan `info`ni (yoki `error`ni) qaytaradi, `urlopen`
+    esa berilgan xom baytlarni o'qiladigan oqim sifatida beradi (haqiqiy
+    ``ydl.urlopen(url).read()`` chaqiruviga mos)."""
+
+    def __init__(self, info=None, caption_bytes=b"", error=None):
+        self._info = info
+        self._caption_bytes = caption_bytes
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        if self._error is not None:
+            raise self._error
+        return self._info
+
+    def urlopen(self, url):
+        return io.BytesIO(self._caption_bytes)
+
+
+@pytest.fixture
+def fake_ytdlp(monkeypatch):
+    """`fetch_transcript` ichidagi `downloader.ydl_opts_ctx` va
+    `yt_dlp.YoutubeDL`ni soxtalashtiradi — chaqiruvchi `info`/`caption_bytes`
+    (muvaffaqiyat) yoki `error` (`extract_info` ko'taradigan xato) beradi."""
+    def install(info=None, caption_bytes=b"", error=None):
+        monkeypatch.setattr(fetch.downloader, "ydl_opts_ctx", lambda extra: contextlib.nullcontext({}))
+        monkeypatch.setattr(fetch.yt_dlp, "YoutubeDL", lambda opts: _FakeYdl(info, caption_bytes, error))
+    return install
+
+
+def _json3_bytes(events: list[dict]) -> bytes:
+    return json.dumps({"events": events}).encode("utf-8")
+
+
 class TestFetchTranscript:
-    def test_returns_raw_data_on_success(self, monkeypatch):
-        class _FakeTranscript:
-            def to_raw_data(self):
-                return [{"text": "salom", "start": 0.0, "duration": 1.5}]
+    def test_returns_parsed_segments_from_manual_subtitles(self, fake_ytdlp):
+        info = {"subtitles": {"en": [{"ext": "json3", "url": "https://example.com/en.json3"}]}, "automatic_captions": {}}
+        caption_bytes = _json3_bytes([{"tStartMs": 0, "dDurationMs": 1500, "segs": [{"utf8": "salom"}]}])
+        fake_ytdlp(info=info, caption_bytes=caption_bytes)
 
-        class _FakeApi:
-            def fetch(self, video_id, languages=None):
-                assert video_id == "abc123"
-                return _FakeTranscript()
+        assert fetch.fetch_transcript("abc123", languages=["en"]) == [
+            {"text": "salom", "start": 0.0, "duration": 1.5}
+        ]
 
-        monkeypatch.setattr(fetch, "YouTubeTranscriptApi", _FakeApi)
+    def test_prefers_manual_subtitles_over_automatic_captions(self, fake_ytdlp):
+        info = {
+            "subtitles": {"en": [{"ext": "json3", "url": "https://example.com/manual.json3"}]},
+            "automatic_captions": {"en": [{"ext": "json3", "url": "https://example.com/auto.json3"}]},
+        }
+        caption_bytes = _json3_bytes([{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "qo'lda"}]}])
+        fake_ytdlp(info=info, caption_bytes=caption_bytes)
 
-        assert fetch.fetch_transcript("abc123") == [{"text": "salom", "start": 0.0, "duration": 1.5}]
+        assert fetch.fetch_transcript("abc123", languages=["en"]) == [
+            {"text": "qo'lda", "start": 0.0, "duration": 1.0}
+        ]
 
-    @pytest.mark.parametrize("exc_cls", [
-        fetch.TranscriptsDisabled, fetch.NoTranscriptFound, fetch.VideoUnavailable,
-        fetch.VideoUnplayable, fetch.AgeRestricted, fetch.InvalidVideoId,
+    def test_falls_back_to_automatic_captions_when_no_manual_subtitles(self, fake_ytdlp):
+        info = {"subtitles": {}, "automatic_captions": {"en": [{"ext": "json3", "url": "https://example.com/auto.json3"}]}}
+        caption_bytes = _json3_bytes([{"tStartMs": 500, "dDurationMs": 2000, "segs": [{"utf8": "avto"}]}])
+        fake_ytdlp(info=info, caption_bytes=caption_bytes)
+
+        assert fetch.fetch_transcript("abc123", languages=["en"]) == [
+            {"text": "avto", "start": 0.5, "duration": 2.0}
+        ]
+
+    def test_tries_languages_in_priority_order(self, fake_ytdlp):
+        # 'uz' talab qilingan ro'yxatda birinchi, lekin faqat 'en' mavjud —
+        # ro'yxatdagi keyingi til ishlatilishi kerak.
+        info = {"subtitles": {}, "automatic_captions": {"en": [{"ext": "json3", "url": "https://example.com/en.json3"}]}}
+        caption_bytes = _json3_bytes([{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "hi"}]}])
+        fake_ytdlp(info=info, caption_bytes=caption_bytes)
+
+        assert fetch.fetch_transcript("abc123", languages=["uz", "en"]) is not None
+
+    def test_returns_none_when_no_caption_in_requested_languages(self, fake_ytdlp):
+        info = {"subtitles": {}, "automatic_captions": {"fr": [{"ext": "json3", "url": "x"}]}}
+        fake_ytdlp(info=info)
+
+        assert fetch.fetch_transcript("abc123", languages=["uz", "en"]) is None
+
+    def test_returns_none_when_no_json3_format_available(self, fake_ytdlp):
+        # json3'dan boshqa format (masalan faqat vtt) hozircha qo'llab-
+        # quvvatlanmaydi — "subtitr yo'q" deb hisoblanadi.
+        info = {"subtitles": {"en": [{"ext": "vtt", "url": "x"}]}, "automatic_captions": {}}
+        fake_ytdlp(info=info)
+
+        assert fetch.fetch_transcript("abc123", languages=["en"]) is None
+
+    def test_skips_events_without_text(self, fake_ytdlp):
+        info = {"subtitles": {"en": [{"ext": "json3", "url": "x"}]}, "automatic_captions": {}}
+        caption_bytes = _json3_bytes([
+            {"tStartMs": 0, "dDurationMs": 1000},  # "segs" umuman yo'q
+            {"tStartMs": 1000, "dDurationMs": 1000, "segs": [{"utf8": "   "}]},  # faqat bo'shliq
+            {"tStartMs": 2000, "dDurationMs": 1000, "segs": [{"utf8": "matn"}]},
+        ])
+        fake_ytdlp(info=info, caption_bytes=caption_bytes)
+
+        assert fetch.fetch_transcript("abc123", languages=["en"]) == [
+            {"text": "matn", "start": 2.0, "duration": 1.0}
+        ]
+
+    @pytest.mark.parametrize("message", [
+        "ERROR: [youtube] abc123: Video unavailable",
+        "ERROR: [youtube] abc123: Private video. Sign in if you've been granted access to this video",
+        "This video has been removed by the uploader",
+        "This video is no longer available because the YouTube account "
+        "associated with this video has been terminated",
+        "ERROR: [youtube] xyz789: This live event will begin in 12 hours.",
     ])
-    def test_returns_none_for_permanently_unavailable_video(self, monkeypatch, exc_cls):
-        # `__new__` orqali (constructor argumentlarisiz) — bu sinflarning
-        # ba'zilari (masalan `VideoUnplayable`) murakkab argumentlar talab
-        # qiladi, testda faqat isinstance() moslikni tekshiramiz.
-        class _FakeApi:
-            def fetch(self, video_id, languages=None):
-                raise exc_cls.__new__(exc_cls)
-
-        monkeypatch.setattr(fetch, "YouTubeTranscriptApi", _FakeApi)
+    def test_returns_none_for_permanently_unavailable_video(self, fake_ytdlp, message):
+        fake_ytdlp(error=RuntimeError(message))
 
         assert fetch.fetch_transcript("abc123") is None
 
-    def test_raises_transcript_fetch_blocked_when_youtube_blocks_the_request(self, monkeypatch):
-        # IP bloklanish/PO token va h.k. — bu video haqida emas, shuning
-        # uchun "subtitr yo'q" bilan bir xil `None`ga aralashtirilmasligi
-        # kerak (aks holda channel indexlashda video abadiy "tekshirilgan,
-        # subtitri yo'q" deb qolib ketardi — haqiqiy IShowSpeed jonli
-        # tekshiruvida aynan shu holat yuz berdi).
-        class _FakeApi:
-            def fetch(self, video_id, languages=None):
-                raise IpBlocked(video_id)
-
-        monkeypatch.setattr(fetch, "YouTubeTranscriptApi", _FakeApi)
+    def test_raises_transcript_fetch_blocked_for_unexpected_errors(self, fake_ytdlp):
+        # Tarmoq xatosi / "Sign in to confirm you're not a bot" / PO token
+        # muammosi va h.k. — bu VIDEO haqida emas, shuning uchun "subtitr
+        # yo'q" bilan bir xil `None`ga aralashtirilmasligi kerak (aks holda
+        # kanal indexlashda video abadiy "tekshirilgan, subtitri yo'q" deb
+        # qolib ketardi — haqiqiy IShowSpeed jonli tekshiruvida aynan shu
+        # holat, avvalgi youtube-transcript-api asosidagi kodda, yuz bergan).
+        fake_ytdlp(error=RuntimeError("Sign in to confirm you're not a bot"))
 
         with pytest.raises(fetch.TranscriptFetchBlocked):
             fetch.fetch_transcript("abc123")
 
-    def test_unexpected_exception_is_treated_as_blocked_not_permanent(self, monkeypatch):
-        class _FakeApi:
-            def fetch(self, video_id, languages=None):
-                raise ConnectionError("timeout")
-
-        monkeypatch.setattr(fetch, "YouTubeTranscriptApi", _FakeApi)
+    def test_age_restriction_is_treated_as_temporary_not_permanent(self, fake_ytdlp):
+        # Cookie sozlansa keyinroq ochilishi mumkin bo'lgan holat —
+        # doimiy "subtitr yo'q" deb belgilanmasligi kerak.
+        fake_ytdlp(error=RuntimeError("Sign in to confirm your age"))
 
         with pytest.raises(fetch.TranscriptFetchBlocked):
             fetch.fetch_transcript("abc123")

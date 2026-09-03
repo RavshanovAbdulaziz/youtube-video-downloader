@@ -21,17 +21,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Kanal ID / @handle / URL (berilmasa — butun YouTube bo'yicha qidiradi)",
     )
     parser.add_argument("--max-videos", dest="max_videos", type=int, default=None)
+    parser.add_argument(
+        "--after", dest="published_after", default=None, metavar="YYYY-MM-DD",
+        help="Faqat shu sanadan keyin (qamrab) e'lon qilingan videolar",
+    )
+    parser.add_argument(
+        "--before", dest="published_before", default=None, metavar="YYYY-MM-DD",
+        help="Faqat shu sanagacha (qamrab) e'lon qilingan videolar",
+    )
     parser.add_argument("--json", action="store_true", help="Natijani JSON sifatida chiqarish")
     args = parser.parse_args(argv)
 
-    results = search_module.search(args.query, channel_id=args.channel_id, max_videos=args.max_videos)
+    data = search_module.search(
+        args.query, channel_id=args.channel_id, max_videos=args.max_videos,
+        published_after=args.published_after, published_before=args.published_before,
+    )
+    results = data["results"]
 
     if args.json:
-        print(json.dumps(results, ensure_ascii=False, indent=2))
+        print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
 
     if not results:
-        print("Hech narsa topilmadi.")
+        if data["blocked"]:
+            print("Diqqat: YouTube ba'zi videolarni tekshirishni vaqtincha bloklagan — "
+                  "natija to'liqsiz bo'lishi mumkin, birozdan keyin qayta urinib ko'ring.")
+        else:
+            print("Hech narsa topilmadi.")
         return 0
 
     for r in results:

@@ -299,7 +299,10 @@
         bo'yicha qidiradi. Kanal maydonini bo'sh qoldirsangiz butun YouTube bo'yicha
         (nomzod videolarni topib, transkriptlarini real vaqtda tekshirib) qidiradi —
         bu birmuncha sekinroq. Kanal ko'rsatsangiz, birinchi qidiruvda o'sha kanal
-        indexlanadi (saqlanadi) va keyingi qidiruvlar tezkor bo'ladi.
+        indexlanadi (saqlanadi) va keyingi qidiruvlar tezkor bo'ladi. Vaqt oralig'ini
+        (masalan "3 yil oldindan — 1 yil oldingacha") belgilasangiz, kanal tarixining
+        o'sha davridagi videolar qidiriladi (hali indexlanmagan bo'lsa ham) — kattaroq
+        oraliqlarda birmuncha vaqt olishi mumkin.
       </p>
 
       <div class="options">
@@ -318,6 +321,33 @@
           </span>
           <input type="text" id="transcript-channel-input" placeholder="@handle, kanal havolasi yoki UC... ID (bo'sh — butun YouTube)" />
         </label>
+
+        <div class="date-range-row">
+          <div class="date-ago-group">
+            <span class="label-text">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+              Necha vaqt oldindan (ixtiyoriy)
+            </span>
+            <div class="date-ago-inputs">
+              <input type="number" id="transcript-years-from-input" min="0" max="30" placeholder="0" />
+              <span class="date-ago-unit">yil</span>
+              <input type="number" id="transcript-months-from-input" min="0" max="11" placeholder="0" />
+              <span class="date-ago-unit">oy oldin</span>
+            </div>
+          </div>
+          <div class="date-ago-group">
+            <span class="label-text">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+              Necha vaqt oldingacha (ixtiyoriy)
+            </span>
+            <div class="date-ago-inputs">
+              <input type="number" id="transcript-years-to-input" min="0" max="30" placeholder="0" />
+              <span class="date-ago-unit">yil</span>
+              <input type="number" id="transcript-months-to-input" min="0" max="11" placeholder="0" />
+              <span class="date-ago-unit">oy oldin</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <button id="transcript-search-btn">
@@ -338,6 +368,48 @@
       <p id="transcript-empty-msg" class="hint hidden">Hech narsa topilmadi. Boshqa so'z bilan urinib ko'ring.</p>
 
       <div id="transcript-results" class="transcript-results"></div>
+
+      <div class="find-source-block">
+        <h3 class="find-source-title">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Klip qaysi streamdan olingan?
+        </h3>
+        <p class="hint">
+          Shorts yoki qisqa klip havolasini qo'ying — uning transkripti indekslangan
+          streamlar bilan solishtirilib, manba video va <b>aniq soniya</b> topiladi.
+          Eng oson yo'li: yuqoridagi kanal maydonini <b>bo'sh qoldiring</b> —
+          u holda butun indeks bo'yicha qidiriladi. Faqat allaqachon indekslangan
+          videolar ichidan qidiradi; topilmasa, yuqoridagi qidiruv orqali kanalni
+          (kerakli davr bilan) indekslab, qayta urinib ko'ring.
+        </p>
+
+        <div class="options">
+          <label>
+            <span class="label-text">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Klip havolasi
+            </span>
+            <input type="text" id="find-source-url-input" placeholder="https://youtube.com/shorts/..." />
+          </label>
+        </div>
+
+        <button id="find-source-btn">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <span>Manbani topish</span>
+        </button>
+
+        <p id="find-source-error-msg" class="error hidden">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <span id="find-source-error-msg-text"></span>
+        </p>
+
+        <div id="find-source-progress-wrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="find-source-progress-fill" class="progress-fill"></div></div>
+          <p class="progress-text">Manba qidirilmoqda...</p>
+        </div>
+
+        <div id="find-source-result"></div>
+      </div>
     </div>
   </main>
 

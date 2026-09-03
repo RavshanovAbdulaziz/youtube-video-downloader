@@ -90,3 +90,59 @@ class TestSegmentsAndSearch:
         ])
         assert store.find_matching_video_ids("UCabc", "50%") == ["vid2"]
         assert store.find_matching_video_ids("UCabc", "50X") == []
+
+
+class TestPublishedAtFilter:
+    def _seed(self, video_id, published_at, text="gaming setup haqida"):
+        store.save_video_segments(
+            video_id, "UCabc", "Kanal", "Video",
+            [{"text": text, "start_time": 0.0, "end_time": 1.0}],
+            published_at=published_at,
+        )
+
+    def test_published_at_is_persisted_and_returned_by_get_video_meta(self):
+        self._seed("vid1", "2023-02-15")
+        # get_video_meta o'zi published_at qaytarmaydi (search.py'ga hozircha
+        # kerak emas) — bu yerda faqat qatorga yozilganini find_matching orqali
+        # bilvosita tekshiramiz (pastdagi testlar).
+        assert store.get_video_meta("vid1") is not None
+
+    def test_filters_by_published_after(self):
+        self._seed("old", "2022-12-31")
+        self._seed("new", "2023-01-15")
+        assert store.find_matching_video_ids("UCabc", "gaming", published_after="2023-01-01") == ["new"]
+
+    def test_filters_by_published_before(self):
+        self._seed("old", "2022-12-31")
+        self._seed("new", "2023-01-15")
+        assert store.find_matching_video_ids("UCabc", "gaming", published_before="2023-01-01") == ["old"]
+
+    def test_filters_by_both_bounds_inclusive(self):
+        self._seed("before", "2022-12-31")
+        self._seed("inside_start", "2023-01-01")
+        self._seed("inside_end", "2023-03-31")
+        self._seed("after", "2023-04-01")
+
+        ids = set(store.find_matching_video_ids(
+            "UCabc", "gaming", published_after="2023-01-01", published_before="2023-03-31",
+        ))
+        assert ids == {"inside_start", "inside_end"}
+
+    def test_rows_without_published_at_are_excluded_when_date_filter_given(self):
+        # Force reindex qilinmagan eski qatorlar (published_at = NULL) sana
+        # bo'yicha filtrlangan qidiruvda ko'rinmasligi kerak — lekin sana
+        # filtri BERILMAGANDA odatdagidek chiqishda davom etadi.
+        store.save_video_segments("legacy", "UCabc", "K", "V", [
+            {"text": "gaming setup", "start_time": 0.0, "end_time": 1.0},
+        ])  # published_at berilmagan -> NULL
+
+        assert store.find_matching_video_ids("UCabc", "gaming") == ["legacy"]
+        assert store.find_matching_video_ids("UCabc", "gaming", published_after="2020-01-01") == []
+
+    def test_no_transcript_video_does_not_get_published_at_row(self):
+        # Segmentsiz video uchun `transcript_segments`ga umuman qator
+        # yozilmaydi — shuning uchun published_at ham saqlanmaydi, lekin bu
+        # zararli emas: bunday video hech qachon qidiruv natijasida
+        # chiqmaydi (moslashtiriladigan matni yo'q).
+        store.save_video_segments("no-transcript", "UCabc", "K", "V", [], published_at="2023-05-05")
+        assert store.find_matching_video_ids("UCabc", "gaming") == []

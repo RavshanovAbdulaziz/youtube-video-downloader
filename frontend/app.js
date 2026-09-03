@@ -65,6 +65,10 @@ const liveErrorMsgText = document.getElementById("live-error-msg-text");
 const liveFileLink = document.getElementById("live-file-link");
 const transcriptQueryInput = document.getElementById("transcript-query-input");
 const transcriptChannelInput = document.getElementById("transcript-channel-input");
+const transcriptYearsFromInput = document.getElementById("transcript-years-from-input");
+const transcriptMonthsFromInput = document.getElementById("transcript-months-from-input");
+const transcriptYearsToInput = document.getElementById("transcript-years-to-input");
+const transcriptMonthsToInput = document.getElementById("transcript-months-to-input");
 const transcriptSearchBtn = document.getElementById("transcript-search-btn");
 const transcriptErrorMsg = document.getElementById("transcript-error-msg");
 const transcriptErrorMsgText = document.getElementById("transcript-error-msg-text");
@@ -72,6 +76,13 @@ const transcriptProgressWrap = document.getElementById("transcript-progress-wrap
 const transcriptProgressFill = document.getElementById("transcript-progress-fill");
 const transcriptEmptyMsg = document.getElementById("transcript-empty-msg");
 const transcriptResults = document.getElementById("transcript-results");
+const findSourceUrlInput = document.getElementById("find-source-url-input");
+const findSourceBtn = document.getElementById("find-source-btn");
+const findSourceErrorMsg = document.getElementById("find-source-error-msg");
+const findSourceErrorMsgText = document.getElementById("find-source-error-msg-text");
+const findSourceProgressWrap = document.getElementById("find-source-progress-wrap");
+const findSourceProgressFill = document.getElementById("find-source-progress-fill");
+const findSourceResult = document.getElementById("find-source-result");
 
 let currentInfo = null;
 
@@ -892,6 +903,12 @@ function pollLiveProgress(jobId, base) {
 // Transkript qidiruv
 // ---------------------------------------------------------------------------
 
+const TRANSCRIPT_EMPTY_DEFAULT_MSG = "Hech narsa topilmadi. Boshqa so'z bilan urinib ko'ring.";
+// `blocked` javobda true bo'lganda ko'rsatiladi — bo'sh natija so'z
+// transkriptlarda umuman yo'qligini emas, YouTube ba'zi videolarni
+// tekshirishni vaqtincha bloklaganini bildiradi (qayta urinishga arziydi).
+const TRANSCRIPT_EMPTY_BLOCKED_MSG = "Hech narsa topilmadi — YouTube ba'zi videolarni tekshirishni vaqtincha bloklagan bo'lishi mumkin. Bir necha daqiqadan so'ng qayta urinib ko'ring.";
+
 function showTranscriptError(msg) {
   transcriptErrorMsgText.textContent = msg;
   transcriptErrorMsg.classList.remove("hidden");
@@ -899,6 +916,20 @@ function showTranscriptError(msg) {
 
 function clearTranscriptError() {
   transcriptErrorMsg.classList.add("hidden");
+}
+
+// "N yil M oy oldin" inputlarini backend kutgan "YYYY-MM-DD" sanasiga
+// aylantiradi. Ikkalasi ham bo'sh bo'lsa (chegara belgilanmagan) `null`
+// qaytaradi — foydalanuvchi aniq kunni emas, taxminiy davrni kiritadi,
+// shuning uchun kun doim oyning 1-kuni sifatida olinadi.
+function transcriptAgoToISODate(yearsInput, monthsInput) {
+  const years = parseInt(yearsInput.value, 10) || 0;
+  const months = parseInt(monthsInput.value, 10) || 0;
+  if (!yearsInput.value.trim() && !monthsInput.value.trim()) return null;
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - (years * 12 + months));
+  return d.toISOString().slice(0, 10);
 }
 
 // Moslikni <mark> bilan ajratib ko'rsatadi — innerHTML/string interpolatsiya
@@ -973,6 +1004,15 @@ transcriptSearchBtn.addEventListener("click", async () => {
     return;
   }
   const channelId = transcriptChannelInput.value.trim();
+  // "Necha vaqt oldindan" (uzoqroq o'tmish) -> published_after (pastki
+  // chegara); "Necha vaqt oldingacha" (yaqinroq) -> published_before
+  // (yuqori chegara). Masalan "3 yil oldindan — 1 yil oldingacha".
+  const publishedAfter = transcriptAgoToISODate(transcriptYearsFromInput, transcriptMonthsFromInput);
+  const publishedBefore = transcriptAgoToISODate(transcriptYearsToInput, transcriptMonthsToInput);
+  if (publishedAfter && publishedBefore && publishedAfter > publishedBefore) {
+    showTranscriptError("\"Necha vaqt oldindan\" qiymati \"necha vaqt oldingacha\"dan uzoqroq o'tmishda bo'lishi kerak.");
+    return;
+  }
 
   clearTranscriptError();
   transcriptEmptyMsg.classList.add("hidden");
@@ -986,12 +1026,16 @@ transcriptSearchBtn.addEventListener("click", async () => {
     const res = await fetch("/api/transcript/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, channel_id: channelId || null }),
+      body: JSON.stringify({
+        query, channel_id: channelId || null,
+        published_after: publishedAfter, published_before: publishedBefore,
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
 
     if (data.results.length === 0) {
+      transcriptEmptyMsg.textContent = data.blocked ? TRANSCRIPT_EMPTY_BLOCKED_MSG : TRANSCRIPT_EMPTY_DEFAULT_MSG;
       transcriptEmptyMsg.classList.remove("hidden");
     } else {
       renderTranscriptResults(data.results, query);
@@ -1002,5 +1046,101 @@ transcriptSearchBtn.addEventListener("click", async () => {
     transcriptProgressWrap.classList.add("hidden");
     transcriptSearchBtn.disabled = false;
     transcriptSearchBtn.classList.remove("loading");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Klip -> manba stream ("bu shorts qaysi streamdan olingan?")
+// ---------------------------------------------------------------------------
+
+function showFindSourceError(msg) {
+  findSourceErrorMsgText.textContent = msg;
+  findSourceErrorMsg.classList.remove("hidden");
+}
+
+// Natija kartasi DOM tugunlari orqali quriladi (innerHTML emas) — matn
+// YouTube subtitrlaridan keladi, ya'ni ishonchsiz manba.
+function renderFindSourceResult(data) {
+  findSourceResult.textContent = "";
+
+  if (!data.found) {
+    const msg = document.createElement("p");
+    msg.className = "hint";
+    msg.textContent =
+      "Ishonchli manba topilmadi — ehtimol manba stream hali indekslanmagan. " +
+      "Bunday holatda taxminiy (ehtimol xato) javob ATAYLAB ko'rsatilmaydi. " +
+      "Yuqoridagi qidiruv orqali kanalni kerakli davr bilan indekslab, qayta urinib ko'ring.";
+    findSourceResult.appendChild(msg);
+    return;
+  }
+
+  const m = data.match;
+  const card = document.createElement("a");
+  card.className = "transcript-result";
+  card.href = m.url;
+  card.target = "_blank";
+  card.rel = "noopener noreferrer";
+
+  const head = document.createElement("div");
+  head.className = "transcript-result-head";
+
+  const time = document.createElement("span");
+  time.className = "transcript-result-time";
+  time.textContent = formatDuration(m.start_time);
+
+  const title = document.createElement("span");
+  title.className = "transcript-result-title";
+  title.textContent = m.video_title || m.video_id;
+
+  head.appendChild(time);
+  head.appendChild(title);
+
+  const channel = document.createElement("p");
+  channel.className = "transcript-result-channel";
+  channel.textContent = m.published_at ? `${m.channel_name} — ${m.published_at}` : m.channel_name;
+
+  const detail = document.createElement("p");
+  detail.className = "transcript-result-text";
+  detail.textContent = data.confident
+    ? `Mos kelgan so'zlar: ${m.matched_terms.slice(0, 10).join(", ")}`
+    : `Ishonch past (ball: ${m.score.toFixed(1)}) — bu taxminiy moslik bo'lishi mumkin. ` +
+      `Mos so'zlar: ${m.matched_terms.slice(0, 10).join(", ")}`;
+
+  card.appendChild(head);
+  card.appendChild(channel);
+  card.appendChild(detail);
+  findSourceResult.appendChild(card);
+}
+
+findSourceBtn.addEventListener("click", async () => {
+  const clipUrl = findSourceUrlInput.value.trim();
+  if (!clipUrl) {
+    showFindSourceError("Iltimos, klip (Shorts) havolasini kiriting.");
+    return;
+  }
+  const channelId = transcriptChannelInput.value.trim();
+
+  findSourceErrorMsg.classList.add("hidden");
+  findSourceResult.textContent = "";
+  findSourceProgressWrap.classList.remove("hidden");
+  setProgress(findSourceProgressFill, 0, true);
+  findSourceBtn.disabled = true;
+  findSourceBtn.classList.add("loading");
+
+  try {
+    const res = await fetch("/api/transcript/find-source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clip_url: clipUrl, channel_id: channelId || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Xatolik yuz berdi");
+    renderFindSourceResult(data);
+  } catch (e) {
+    showFindSourceError(e.message);
+  } finally {
+    findSourceProgressWrap.classList.add("hidden");
+    findSourceBtn.disabled = false;
+    findSourceBtn.classList.remove("loading");
   }
 });

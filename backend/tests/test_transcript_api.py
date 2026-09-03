@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import main
 from transcript import fetch
+from transcript import find_source as find_source_module
 from transcript import search as search_module
 
 
@@ -18,12 +19,16 @@ class TestTranscriptSearchEndpoint:
     def test_returns_results_for_valid_query(self, client, monkeypatch):
         monkeypatch.setattr(
             search_module, "search",
-            lambda query, channel_id=None, max_videos=None, context_size=1: [
-                {
-                    "video_id": "v1", "video_title": "T", "channel_name": "Ch",
-                    "text": "x", "start_time": 1.0, "url": "https://youtube.com/watch?v=v1&t=1s",
-                }
-            ],
+            lambda query, channel_id=None, max_videos=None, context_size=1,
+            published_after=None, published_before=None: {
+                "results": [
+                    {
+                        "video_id": "v1", "video_title": "T", "channel_name": "Ch",
+                        "text": "x", "start_time": 1.0, "url": "https://youtube.com/watch?v=v1&t=1s",
+                    }
+                ],
+                "blocked": False,
+            },
         )
 
         res = client.post("/api/transcript/search", json={"query": "salom"})
@@ -33,13 +38,15 @@ class TestTranscriptSearchEndpoint:
         assert body["mode"] == "global"
         assert body["count"] == 1
         assert body["results"][0]["video_id"] == "v1"
+        assert body["blocked"] is False
 
     def test_channel_mode_used_when_channel_id_given(self, client, monkeypatch):
         captured = {}
 
-        def fake_search(query, channel_id=None, max_videos=None, context_size=1):
+        def fake_search(query, channel_id=None, max_videos=None, context_size=1,
+                         published_after=None, published_before=None):
             captured["channel_id"] = channel_id
-            return []
+            return {"results": [], "blocked": False}
 
         monkeypatch.setattr(search_module, "search", fake_search)
 
@@ -50,12 +57,25 @@ class TestTranscriptSearchEndpoint:
         assert captured["channel_id"] == "UCabc"
 
     def test_empty_results_return_empty_list_not_error(self, client, monkeypatch):
-        monkeypatch.setattr(search_module, "search", lambda *a, **k: [])
+        monkeypatch.setattr(search_module, "search", lambda *a, **k: {"results": [], "blocked": False})
 
         res = client.post("/api/transcript/search", json={"query": "topilmaydigan ibora"})
 
         assert res.status_code == 200
-        assert res.json() == {"query": "topilmaydigan ibora", "mode": "global", "count": 0, "results": []}
+        assert res.json() == {
+            "query": "topilmaydigan ibora", "mode": "global", "count": 0, "results": [], "blocked": False,
+        }
+
+    def test_blocked_flag_is_surfaced_when_indexing_was_blocked(self, client, monkeypatch):
+        # Bo'sh natija YouTube tomonidan bloklanish sabab bo'lishi mumkin —
+        # frontend buni "hech narsa topilmadi"dan farqlab ko'rsatishi uchun
+        # `blocked` javobda to'g'ri uzatilishi kerak.
+        monkeypatch.setattr(search_module, "search", lambda *a, **k: {"results": [], "blocked": True})
+
+        res = client.post("/api/transcript/search", json={"query": "salom", "channel_id": "UCabc"})
+
+        assert res.status_code == 200
+        assert res.json()["blocked"] is True
 
     def test_rejects_empty_query_with_400(self, client, monkeypatch):
         def boom(*a, **k):
@@ -95,9 +115,10 @@ class TestTranscriptSearchEndpoint:
     def test_clamps_max_videos_to_fifty(self, client, monkeypatch):
         captured = {}
 
-        def fake_search(query, channel_id=None, max_videos=None, context_size=1):
+        def fake_search(query, channel_id=None, max_videos=None, context_size=1,
+                         published_after=None, published_before=None):
             captured["max_videos"] = max_videos
-            return []
+            return {"results": [], "blocked": False}
 
         monkeypatch.setattr(search_module, "search", fake_search)
 
@@ -106,6 +127,116 @@ class TestTranscriptSearchEndpoint:
         assert res.status_code == 200
         assert captured["max_videos"] == 50
 
+    def test_allows_higher_max_videos_ceiling_when_date_range_given(self, client, monkeypatch):
+        # 50 juda faol kanalda sana oralig'ining atigi bir necha haftasini
+        # qamrab olardi — sana oralig'i berilganda chegara ancha yuqoriroq
+        # bo'lishi kerak (`search.py`dagi `DEFAULT_DATE_RANGE_MAX_VIDEOS`ga qarang).
+        captured = {}
+
+        def fake_search(query, channel_id=None, max_videos=None, context_size=1,
+                         published_after=None, published_before=None):
+            captured["max_videos"] = max_videos
+            return {"results": [], "blocked": False}
+
+        monkeypatch.setattr(search_module, "search", fake_search)
+
+        res = client.post("/api/transcript/search", json={
+            "query": "salom", "max_videos": 999, "published_after": "2023-01-01",
+        })
+
+        assert res.status_code == 200
+        assert captured["max_videos"] == 500
+
     def test_missing_query_field_returns_422(self, client):
         res = client.post("/api/transcript/search", json={})
         assert res.status_code == 422
+
+    def test_published_date_range_is_passed_through(self, client, monkeypatch):
+        captured = {}
+
+        def fake_search(query, channel_id=None, max_videos=None, context_size=1,
+                         published_after=None, published_before=None):
+            captured["published_after"] = published_after
+            captured["published_before"] = published_before
+            return {"results": [], "blocked": False}
+
+        monkeypatch.setattr(search_module, "search", fake_search)
+
+        res = client.post("/api/transcript/search", json={
+            "query": "salom", "published_after": "2023-01-01", "published_before": "2023-03-31",
+        })
+
+        assert res.status_code == 200
+        assert captured["published_after"] == "2023-01-01"
+        assert captured["published_before"] == "2023-03-31"
+
+    def test_find_source_returns_match(self, client, monkeypatch):
+        captured = {}
+
+        def fake_find_source(clip_url, channel_id=None):
+            captured["clip_url"] = clip_url
+            captured["channel_id"] = channel_id
+            return {
+                "found": True, "confident": True, "clip_id": "B4uytxWGWEk", "clip_language": "uz",
+                "match": {
+                    "video_id": "VoL8U_UF0do", "video_title": "45 million in Thailand",
+                    "channel_name": "IShowSpeed", "published_at": "2025-10-21",
+                    "start_time": 6015.0, "score": 33.6, "matched_terms": ["marker"],
+                    "url": "https://youtube.com/watch?v=VoL8U_UF0do&t=6015s",
+                },
+            }
+
+        monkeypatch.setattr(find_source_module, "find_source", fake_find_source)
+
+        res = client.post("/api/transcript/find-source", json={
+            "clip_url": "https://youtube.com/shorts/B4uytxWGWEk", "channel_id": "UCabc",
+        })
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["found"] is True
+        assert body["match"]["video_id"] == "VoL8U_UF0do"
+        assert captured["channel_id"] == "UCabc"
+
+    def test_find_source_not_found_is_200_not_error(self, client, monkeypatch):
+        monkeypatch.setattr(find_source_module, "find_source", lambda *a, **k: {
+            "found": False, "confident": False, "clip_id": "x", "clip_language": None, "match": None,
+        })
+
+        res = client.post("/api/transcript/find-source", json={"clip_url": "B4uytxWGWEk"})
+
+        assert res.status_code == 200
+        assert res.json()["found"] is False
+
+    def test_find_source_blocked_returns_503(self, client, monkeypatch):
+        def boom(*a, **k):
+            raise fetch.TranscriptFetchBlocked("HTTP Error 429")
+
+        monkeypatch.setattr(find_source_module, "find_source", boom)
+
+        res = client.post("/api/transcript/find-source", json={"clip_url": "B4uytxWGWEk"})
+
+        assert res.status_code == 503
+
+    def test_find_source_bad_url_returns_400(self, client, monkeypatch):
+        def boom(*a, **k):
+            raise ValueError("Video ID aniqlanmadi")
+
+        monkeypatch.setattr(find_source_module, "find_source", boom)
+
+        res = client.post("/api/transcript/find-source", json={"clip_url": "https://example.com/x"})
+
+        assert res.status_code == 400
+
+    def test_find_source_missing_clip_url_returns_422(self, client):
+        res = client.post("/api/transcript/find-source", json={})
+        assert res.status_code == 422
+
+    def test_invalid_date_format_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(search_module, "search", lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("Invalid isoformat string: 'not-a-date'")
+        ))
+
+        res = client.post("/api/transcript/search", json={"query": "salom", "published_after": "not-a-date"})
+
+        assert res.status_code == 400

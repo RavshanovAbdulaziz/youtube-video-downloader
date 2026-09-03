@@ -1,0 +1,368 @@
+"""Klip (Shorts/qisqa video) qaysi STREAMdan olinganini topish.
+
+Muammo: YouTube'dagi fan kanallari uzun streamlardan qisqa klip qiladi va
+manba havolasini ko'rsatmaydi. Bu modul klipning transkripti bilan
+indekslangan streamlar transkriptini solishtirib, manba videoni va ANIQ
+soniyani topadi.
+
+Nega aniq ibora qidiruvi YETARLI EMAS: klip va streamning avtomatik
+subtitri (ASR) bir xil audio uchun ham har xil chiqadi — montaj, ustiga
+qo'yilgan musiqa, olomon shovqini so'zlarni o'zgartiradi. Shuning uchun:
+
+  1. Klipdan MA'NOLI so'zlar to'plami ajratiladi (stop-so'zlar va
+     "[Music]" kabi subtitr artefaktlarisiz).
+  2. Har bir so'z uchun "qaysi videolarda uchraydi" so'raladi — kam videoda
+     uchragan so'z XARAKTERLIROQ (BM25 IDF): "marker" kabi so'z "speed"dan
+     ancha qimmatroq, hamma videoda uchraydigani esa ~0 ball beradi.
+  3. Eng ko'p IDF ball to'plagan videolar nomzod bo'ladi.
+  4. Har bir nomzod ichida sirg'aluvchi vaqt oynasi (default 60s) bo'ylab
+     ball hisoblanadi — eng yuqori ballli oyna manba lahzasi.
+  5. G'olibning balli qolgan nomzodlar medianasidan yetarlicha
+     (MIN_MARGIN barobar) yuqori bo'lsagina natija qaytariladi.
+
+Nega 5-qadam kerak: indeksda manba stream BO'LMASA ham, algoritm baribir
+"eng yaxshi" videoni topadi. Bunday holatda g'olib raqiblar guruhidan
+deyarli ajralmaydi (margin ~1.2), haqiqiy moslikda esa keskin ajraladi
+(margin 2.3+). Bu tekshiruvsiz javob har safar indeksdagi eng uzun
+streamga "yopishib" qolardi.
+
+Til masalasi: indeks qaysi tilda saqlangan bo'lsa (ingliz asl ASR yoki
+o'zbek avtomatik tarjimasi), klip ham SHU tilda olinishi kerak — tarjima
+ustidagi moslik ishonchsiz. Shuning uchun klip transkripti ``languages``
+ro'yxatidagi har bir til uchun alohida olinadi va eng yaxshi ball bergani
+tanlanadi (2026-09-03 holatiga ko'ra bazada eski o'zbekcha va yangi
+inglizcha yozuvlar aralash bo'lishi mumkin — bu shuni ham qamrab oladi).
+
+Asosiy kirish nuqtasi: ``find_source()``.
+"""
+from __future__ import annotations
+
+import math
+import re
+import statistics
+from collections import Counter
+
+from . import fetch, store
+
+DEFAULT_WINDOW_SECONDS = 60.0   # bitta taqqoslash oynasining uzunligi
+DEFAULT_STEP_SECONDS = 15.0     # oyna qadami (oynalar ustma-ust tushadi)
+MAX_CLIP_TERMS = 40             # klipdan olinadigan eng ko'p uchraydigan so'zlar soni
+MAX_CANDIDATE_VIDEOS = 12       # oyna bo'yicha batafsil tekshiriladigan videolar soni
+DEFAULT_CLIP_LANGUAGES = ["en", "uz"]
+
+# Bitta so'zning takrorlanishidan olinadigan eng katta hissa. Cheklovsiz,
+# klipda 8 marta takrorlangan bitta so'z butun ballni egallab olardi.
+MAX_TERM_REPEAT = 3
+
+# --- Qaror mezonlari (2026-09-03 da HAQIQIY ma'lumotda kalibrlangan) -------
+# Eng muhim mezon — MARGIN: g'olib ballining qolgan nomzodlar MEDIANASIGA
+# nisbati. O'lchov (IShowSpeed, 320 ta indekslangan video):
+#     to'g'ri moslik (B4uytxWGWEk -> VoL8U_UF0do): 45.01 / 19.28 = 2.33
+#     xato mosliklar (3 xil holat):               1.19 / 1.22 / 1.39
+#
+# Nega 2-o'rin emas, MEDIANA: 2-o'ringa nisbat indeks o'sishi bilan
+# beqaror. Xuddi shu to'g'ri javobning 2-o'ringa nisbati 68 videolik
+# indeksda 3.31 edi, 320 videolikda 2.02 ga tushdi — kattaroq bazada
+# doim biror "birmuncha o'xshash" video topiladi va u 2-o'rinni egallaydi.
+# Butun raqiblar guruhining medianasi esa barqaror qoladi, ustiga-ustak
+# bitta haqiqiy dublikat (masalan "Day 18 of 35" turkumidagi qo'shni
+# stream) natijani buzib yubormaydi.
+#
+# Xom ball bu ishni bajara olmaydi (xato javob 28.47, to'g'ri javob 23.20
+# bo'lishi mumkin), "coverage" ham ajratmadi (0.279 vs 0.272).
+MIN_SCORE = 1.0             # bundan past — umuman jiddiy ustma-tushlik yo'q
+MIN_MARGIN = 1.7            # bundan past — "eng yaxshi axlat", moslik emas
+MIN_CONFIDENT_SCORE = 12.0
+MIN_CONFIDENT_MARGIN = 2.0
+MIN_CONFIDENT_TERMS = 5     # bitta-ikkita nodir so'z tasodifan mos kelishi mumkin
+
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+_URL_ID_RE = re.compile(
+    r"(?:youtu\.be/|/shorts/|/live/|/embed/|[?&]v=)([A-Za-z0-9_-]{11})"
+)
+_WORD_RE = re.compile(r"[a-z’']+", re.UNICODE)
+
+# Subtitr artefaktlari: "[Music]", "[Applause]", "[musiqa]", "(laughs)" va
+# ">>" so'zlovchi belgisi. Bular NUTQ EMAS — deyarli har bir videoda
+# uchraydi, ya'ni moslikka hech qanday dalil qo'shmaydi, lekin ballni
+# shishiradi ("music" so'zi aynan shu tarzda xato javob bergan edi).
+_CAPTION_ARTIFACT_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)|&gt;&gt;|>>")
+
+# Ingliz + o'zbek eng keng tarqalgan so'zlari: bular deyarli har bir
+# segmentda uchraydi, shuning uchun moslikni aniqlashda foydasiz (aksincha,
+# tasodifiy "shovqin" ball qo'shadi).
+STOPWORDS = frozenset("""
+a an the and or but if is are was were be been being to of in on at for with that this
+these those it its i you he she they we me him her them my your his their our do does
+did done have has had not no yes so as by from up out about into over after what why
+how when where who whom which there here just got get gonna wanna like bro man oh yo uh
+um huh yeah nah ok okay all right well now then can could would should will one two
+know think see say said go going come came want need really much many very too
+va yoki lekin agar men sen siz biz ular bu shu u bor yoq yo'q ha nima nega qanday
+qachon qayerda kim uchun bilan uchun ham emas edi ekan bo'ldi bo'lgan qildi qilgan
+men'ga menga senga sizga bizga ularga aka birodar do'stim juda mana ana keyin oldin
+""".split())
+
+
+def parse_video_id(ref: str) -> str:
+    """Klip havolasidan (Shorts / youtu.be / watch?v= / xom ID) video ID.
+
+    ``https://youtube.com/shorts/B4uytxWGWEk?si=...`` kabi shakllar ham
+    qo'llab-quvvatlanadi."""
+    ref = (ref or "").strip()
+    if not ref:
+        raise ValueError("Klip havolasi bo'sh")
+    m = _URL_ID_RE.search(ref)
+    if m:
+        return m.group(1)
+    if "/" not in ref and _VIDEO_ID_RE.fullmatch(ref):
+        return ref
+    raise ValueError(f"Video ID aniqlanmadi: {ref!r}")
+
+
+def _resolve_channel_id(channel_ref: str | None) -> str | None:
+    """Kanal havolasini indeksda saqlangan xom ``UC...`` ID'ga aylantiradi.
+
+    Kerak, chunki UI'da kanal maydoni qidiruv bloki bilan UMUMIY va u yerga
+    ``@handle`` yoki kanal URL'i kiritish tabiiy (qidiruv yo'li buni
+    ``index_channel`` ichida o'zi hal qiladi). Indeks esa faqat ID bo'yicha
+    filtrlanadi — aylantirmasak, filtr hech nimaga mos kelmay, natija
+    aldamchi "manba topilmadi" bo'lib chiqardi.
+
+    Xom ID berilganda tarmoqqa umuman chiqilmaydi (kvota sarflanmaydi)."""
+    channel_ref = (channel_ref or "").strip()
+    if not channel_ref:
+        return None
+    if fetch._CHANNEL_ID_RE.match(channel_ref):
+        return channel_ref
+    return fetch.resolve_channel(channel_ref)["channel_id"]
+
+
+def _terms(text: str) -> list[str]:
+    """Matndan ma'noli so'zlar — kichik harf, stop-so'zlarsiz, 3 harfdan
+    uzun, subtitr artefaktlarisiz."""
+    out = []
+    for word in _WORD_RE.findall(_CAPTION_ARTIFACT_RE.sub(" ", text.lower())):
+        word = word.strip("'’")
+        if len(word) > 2 and word not in STOPWORDS:
+            out.append(word)
+    return out
+
+
+def _idf(total_videos: int, doc_frequency: int) -> float:
+    """BM25 uslubidagi IDF — so'z qancha kam videoda uchrasa, shuncha qimmat.
+
+    Avvalgi ``log(1 + N/(1+df))`` formulasi HECH QACHON nolga tushmasdi:
+    hamma videoda uchraydigan so'z ham (masalan "hey", "music") ~0.7 ball
+    berardi, o'nlab shunday so'z esa yig'ilib, hech qanday haqiqiy moslik
+    bo'lmagan videoni g'olib qilardi. Bu formulada ``df -> N`` bo'lganda
+    natija ~0 ga intiladi, ya'ni ommaviy so'zlar ballga umuman ta'sir
+    qilmaydi."""
+    return math.log(1 + (total_videos - doc_frequency + 0.5) / (doc_frequency + 0.5))
+
+
+def _clip_terms(raw_segments: list[dict]) -> Counter:
+    counts: Counter = Counter()
+    for seg in raw_segments:
+        counts.update(_terms(seg.get("text", "")))
+    return counts
+
+
+def _score_windows(
+    segments: list[dict],
+    clip_counts: Counter,
+    idf: dict[str, float],
+    window: float,
+    step: float,
+) -> tuple[float, float, list[str]]:
+    """Bitta videoning segmentlari ustidan sirg'aluvchi oyna bo'ylab eng
+    yaxshi ballni topadi. Qaytaradi: ``(ball, oyna boshlanish vaqti, umumiy so'zlar)``."""
+    if not segments:
+        return 0.0, 0.0, []
+
+    prepared = [(seg["start_time"], _terms(seg["text"])) for seg in segments]
+    end = prepared[-1][0]
+
+    best_score, best_start, best_shared = 0.0, 0.0, []
+    start = prepared[0][0]
+    while start <= end:
+        stop = start + window
+        window_counts: Counter = Counter()
+        for seg_start, words in prepared:
+            if start <= seg_start < stop:
+                window_counts.update(words)
+        score = 0.0
+        shared = []
+        for term, clip_count in clip_counts.items():
+            found = window_counts.get(term, 0)
+            weight = idf.get(term, 0.0)
+            if found and weight > 0:
+                score += weight * min(clip_count, found, MAX_TERM_REPEAT)
+                shared.append(term)
+        if score > best_score:
+            best_score, best_start, best_shared = score, start, shared
+        start += step
+    return best_score, best_start, best_shared
+
+
+def _match_against_index(
+    clip_raw: list[dict],
+    channel_id: str | None,
+    window: float,
+    step: float,
+) -> dict | None:
+    """Klip transkriptini indeksdagi videolar bilan solishtiradi.
+
+    Qaytgan lug'atda ``score``dan tashqari ``margin`` ham bor — g'olibning
+    balli qolgan nomzodlar medianasidan necha barobar yuqoriligi. Aynan
+    shu qiymat "haqiqiy moslik"ni "eng yaxshi axlat"dan ajratadi (yuqoridagi
+    mezonlar izohiga qarang)."""
+    clip_counts = _clip_terms(clip_raw)
+    if not clip_counts:
+        return None
+
+    terms = [term for term, _ in clip_counts.most_common(MAX_CLIP_TERMS)]
+    total_videos = max(store.count_indexed_videos(channel_id), 1)
+
+    # Har bir so'z uchun "qaysi videolarda bor" — bu ham nomzodlarni beradi,
+    # ham IDF (hujjat chastotasi) ni.
+    video_terms: dict[str, set[str]] = {}
+    idf: dict[str, float] = {}
+    for term in terms:
+        video_ids = store.find_videos_with_term(term, channel_id=channel_id)
+        idf[term] = _idf(total_videos, len(video_ids))
+        for video_id in video_ids:
+            video_terms.setdefault(video_id, set()).add(term)
+
+    if not video_terms:
+        return None
+
+    ranked = sorted(
+        video_terms.items(),
+        key=lambda item: sum(idf[t] for t in item[1]),
+        reverse=True,
+    )[:MAX_CANDIDATE_VIDEOS]
+
+    scored = []
+    for video_id, _ in ranked:
+        segments = store.get_video_segments(video_id)
+        score, start_time, shared = _score_windows(segments, clip_counts, idf, window, step)
+        scored.append((score, video_id, start_time, sorted(set(shared))))
+    scored.sort(key=lambda row: row[0], reverse=True)
+
+    score, video_id, start_time, shared = scored[0]
+    if score <= 0:
+        return None
+
+    # Yagona nomzod bo'lsa taqqoslash uchun raqib yo'q — margin cheksiz.
+    others = [row[0] for row in scored[1:]]
+    baseline = statistics.median(others) if others else 0.0
+    margin = score / baseline if baseline > 0 else float("inf")
+
+    meta = store.get_video_meta(video_id) or {}
+    return {
+        "video_id": video_id,
+        "video_title": meta.get("video_title", ""),
+        "channel_name": meta.get("channel_name", ""),
+        "published_at": meta.get("published_at"),
+        "start_time": start_time,
+        "score": score,
+        "margin": margin,
+        "matched_terms": shared,
+        "url": f"https://youtube.com/watch?v={video_id}&t={int(start_time)}s",
+    }
+
+
+def find_source(
+    clip_ref: str,
+    channel_id: str | None = None,
+    languages: list[str] | None = None,
+    window: float = DEFAULT_WINDOW_SECONDS,
+    step: float = DEFAULT_STEP_SECONDS,
+) -> dict:
+    """Klip qaysi indekslangan streamdan olinganini topadi.
+
+    - ``clip_ref`` — Shorts/video havolasi yoki xom ID.
+    - ``channel_id`` — berilsa faqat shu kanal videolari ichidan qidiradi
+      (tezroq va aniqroq); berilmasa butun indeks bo'yicha. Xom ``UC...``
+      ID, ``@handle`` yoki kanal URL'i bo'lishi mumkin.
+    - ``languages`` — klip transkripti qaysi tillarda sinab ko'rilishi
+      (indeks tili bilan mos kelishi kerak, yuqoridagi izohga qarang).
+
+    Qaytaradi::
+
+        {"found": bool, "confident": bool, "clip_id": str,
+         "clip_language": str | None, "match": {...} | None}
+
+    ``match`` ichida: ``video_id``, ``video_title``, ``channel_name``,
+    ``published_at``, ``start_time`` (soniya), ``url`` (vaqt belgili),
+    ``score``, ``margin``, ``matched_terms``.
+
+    Ishonchli moslik bo'lmasa ``match`` ``None`` bo'ladi — eng yaxshi
+    nomzod "shunchaki bo'lsin" deb qaytarilmaydi.
+
+    ``fetch.TranscriptFetchBlocked`` ko'tarilishi mumkin — klipning o'z
+    transkriptini olishda YouTube bloklasa (chaqiruvchi buni "topilmadi"dan
+    farqlab ko'rsatishi kerak)."""
+    clip_id = parse_video_id(clip_ref)
+    channel_id = _resolve_channel_id(channel_id)
+    languages = languages or DEFAULT_CLIP_LANGUAGES
+
+    candidates: list[tuple[dict, str]] = []
+    blocked_errors = 0
+
+    for language in languages:
+        try:
+            clip_raw = fetch.fetch_transcript(clip_id, languages=[language])
+        except fetch.TranscriptFetchBlocked:
+            blocked_errors += 1
+            continue
+        if not clip_raw:
+            continue
+        match = _match_against_index(clip_raw, channel_id, window, step)
+        if match:
+            candidates.append((match, language))
+
+    if not candidates and blocked_errors == len(languages):
+        raise fetch.TranscriptFetchBlocked(
+            "Klip transkriptini olishda YouTube so'rovni bloklandi"
+        )
+    if not candidates:
+        return _no_match(clip_id)
+
+    # Tillar orasidan tanlashda ham MARGIN birinchi o'rinda: har xil tildagi
+    # xom ballar bir-biri bilan taqqoslanmaydi (indeksda qaysi til ko'proq
+    # bo'lsa, o'sha tilning balli tabiiy ravishda kattaroq chiqadi), margin
+    # esa nisbiy kattalik — shuning uchun tillararo adolatli.
+    candidates.sort(key=lambda item: (item[0]["margin"], item[0]["score"]), reverse=True)
+    best, best_language = candidates[0]
+
+    if best["score"] < MIN_SCORE or best["margin"] < MIN_MARGIN:
+        return _no_match(clip_id)
+
+    confident = (
+        best["score"] >= MIN_CONFIDENT_SCORE
+        and best["margin"] >= MIN_CONFIDENT_MARGIN
+        and len(best["matched_terms"]) >= MIN_CONFIDENT_TERMS
+    )
+    return {
+        "found": True,
+        "confident": confident,
+        "clip_id": clip_id,
+        "clip_language": best_language,
+        "match": best,
+    }
+
+
+def _no_match(clip_id: str) -> dict:
+    """Ishonchli moslik topilmadi. Eng yaxshi nomzod ATAYLAB qaytarilmaydi:
+    manba stream indekslanmagan bo'lsa, "eng yaxshi axlat" har doim topiladi
+    va uni ko'rsatish foydalanuvchini chalg'itadi (aynan shu sabab bir xil
+    uzun stream har safar javob bo'lib chiqardi)."""
+    return {
+        "found": False,
+        "confident": False,
+        "clip_id": clip_id,
+        "clip_language": None,
+        "match": None,
+    }

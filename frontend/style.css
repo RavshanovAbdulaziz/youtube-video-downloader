@@ -465,6 +465,52 @@ button.loading .icon { animation: spin 0.9s linear infinite; }
   color: #cbd5e1;
 }
 
+.date-range-row {
+  display: flex;
+  gap: 14px;
+}
+
+.date-ago-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.date-ago-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.date-ago-inputs input[type="number"] {
+  width: 56px;
+  min-width: 0;
+  flex: none;
+}
+
+.date-ago-unit {
+  color: #cbd5e1;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.find-source-block {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.find-source-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: #e2e8f0;
+}
+
 .label-text {
   display: flex;
   align-items: center;

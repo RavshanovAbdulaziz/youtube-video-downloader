@@ -4,8 +4,10 @@ yt-dlp[default]
 bgutil-ytdlp-pot-provider
 aiogram
 
-# Transkript qidiruv tab'i (backend/transcript/) uchun.
-youtube-transcript-api
+# Transkript qidiruv tab'i (backend/transcript/) uchun. Transkript matnining
+# o'zi yt-dlp orqali olinadi (yuqoridagi yt-dlp[default]/bgutil-ytdlp-pot-
+# provider'ni qayta ishlatadi) — bu yerda faqat kanal/video METADATA'si
+# (Data API v3) uchun qo'shimcha kutubxona kerak.
 google-api-python-client
 
 # "Ovozni ajratish" (AI: Demucs / UVR) funksiyasi ixtiyoriy va bu faylga

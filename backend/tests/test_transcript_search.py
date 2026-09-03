@@ -81,10 +81,64 @@ class TestSearchValidation:
         with pytest.raises(ValueError):
             search.search("   ")
 
+    def test_raises_on_malformed_published_after(self):
+        with pytest.raises(ValueError):
+            search.search("test", published_after="not-a-date")
+
+    def test_raises_on_malformed_published_before(self):
+        with pytest.raises(ValueError):
+            search.search("test", published_before="2023/01/01")
+
+
+class TestSearchMaxVideosDefaults:
+    # 2026-09-03: haqiqiy IShowSpeed kanaliga qarshi tekshiruvda topilgan
+    # muammo — "1 yil oldin" so'ralganda ``DEFAULT_INDEX_MAX_VIDEOS`` (25)
+    # ishlatilgani uchun juda faol kanalda atigi ~3 haftalik videolar
+    # ko'rib chiqildi, so'ralgan yillik oraliqqa umuman yetib bormadi.
+    def test_uses_recency_default_without_date_range(self, monkeypatch):
+        captured = {}
+
+        def fake_search_channel(query, channel_ref, max_videos, context_size, published_after=None, published_before=None):
+            captured["max_videos"] = max_videos
+            return [], False
+
+        monkeypatch.setattr(search, "_search_channel", fake_search_channel)
+
+        search.search("test", channel_id="UCabc")
+
+        assert captured["max_videos"] == search.DEFAULT_INDEX_MAX_VIDEOS
+
+    def test_uses_much_higher_default_with_date_range(self, monkeypatch):
+        captured = {}
+
+        def fake_search_channel(query, channel_ref, max_videos, context_size, published_after=None, published_before=None):
+            captured["max_videos"] = max_videos
+            return [], False
+
+        monkeypatch.setattr(search, "_search_channel", fake_search_channel)
+
+        search.search("test", channel_id="UCabc", published_after="2023-01-01")
+
+        assert captured["max_videos"] == search.DEFAULT_DATE_RANGE_MAX_VIDEOS
+        assert search.DEFAULT_DATE_RANGE_MAX_VIDEOS > search.DEFAULT_INDEX_MAX_VIDEOS
+
+    def test_explicit_max_videos_overrides_date_range_default(self, monkeypatch):
+        captured = {}
+
+        def fake_search_channel(query, channel_ref, max_videos, context_size, published_after=None, published_before=None):
+            captured["max_videos"] = max_videos
+            return [], False
+
+        monkeypatch.setattr(search, "_search_channel", fake_search_channel)
+
+        search.search("test", channel_id="UCabc", max_videos=10, published_after="2023-01-01")
+
+        assert captured["max_videos"] == 10
+
 
 class TestSearchGlobalMode:
     def test_searches_candidates_and_skips_videos_without_transcript(self, monkeypatch):
-        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results: [
+        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results, **kw: [
             {"video_id": "v1", "title": "T1", "channel_id": "UC1", "channel_name": "Ch1"},
             {"video_id": "v2", "title": "T2", "channel_id": "UC2", "channel_name": "Ch2"},
         ])
@@ -96,8 +150,10 @@ class TestSearchGlobalMode:
 
         monkeypatch.setattr(fetch, "fetch_transcript", fake_fetch_transcript)
 
-        results = search.search("test iborasi")
+        data = search.search("test iborasi")
 
+        assert data["blocked"] is False
+        results = data["results"]
         assert len(results) == 1
         assert results[0]["video_id"] == "v1"
         assert results[0]["start_time"] == 3.0
@@ -107,7 +163,7 @@ class TestSearchGlobalMode:
         # `TranscriptFetchBlocked` (IP limiti va h.k.) shu video haqida
         # emas — keshga "subtitr yo'q" deb yozib qo'yilmasligi kerak,
         # aks holda blok tugagandan keyin ham 24 soat qayta urinilmasdi.
-        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results: [
+        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results, **kw: [
             {"video_id": "v1", "title": "T1", "channel_id": "UC1", "channel_name": "Ch1"},
         ])
 
@@ -116,13 +172,14 @@ class TestSearchGlobalMode:
 
         monkeypatch.setattr(fetch, "fetch_transcript", fake_fetch_transcript)
 
-        results = search.search("test")
+        data = search.search("test")
 
-        assert results == []
+        assert data["results"] == []
+        assert data["blocked"] is True
         assert cache.transcript_cache.get("v1") is None
 
     def test_second_call_uses_cache_instead_of_refetching(self, monkeypatch):
-        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results: [
+        monkeypatch.setattr(fetch, "search_videos", lambda q, max_results, **kw: [
             {"video_id": "v1", "title": "T1", "channel_id": "UC1", "channel_name": "Ch1"},
         ])
         call_count = {"n": 0}
@@ -153,7 +210,7 @@ class TestSearchChannelMode:
 
         list_calls = {"n": 0}
 
-        def fake_list(playlist_id, max_results=None):
+        def fake_list(playlist_id, max_results=None, **kw):
             list_calls["n"] += 1
             return [{"video_id": "v1", "title": "Video 1"}]
 
@@ -163,8 +220,8 @@ class TestSearchChannelMode:
             {"text": "bu yerda maxsus ibora bor", "start": 10.0, "duration": 2.0}
         ])
 
-        results1 = search.search("maxsus ibora", channel_id="UCabc")
-        results2 = search.search("maxsus ibora", channel_id="UCabc")
+        results1 = search.search("maxsus ibora", channel_id="UCabc")["results"]
+        results2 = search.search("maxsus ibora", channel_id="UCabc")["results"]
 
         assert len(results1) == 1
         assert results1[0]["channel_name"] == "Test Kanal"
@@ -176,7 +233,7 @@ class TestSearchChannelMode:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
         })
-        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None: [
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
             {"video_id": "v1", "title": "Video 1"}
         ])
         transcript_calls = {"n": 0}
@@ -196,14 +253,14 @@ class TestSearchChannelMode:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCabc", "title": "IShowSpeed", "uploads_playlist_id": "UUabc",
         })
-        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None: [
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
             {"video_id": "v1", "title": "Video 1"}
         ])
         monkeypatch.setattr(fetch, "fetch_transcript", lambda video_id, languages=None: [
             {"text": "salom ibora", "start": 1.0, "duration": 1.0}
         ])
 
-        results = search.search("salom ibora", channel_id="https://www.youtube.com/@IShowSpeed")
+        results = search.search("salom ibora", channel_id="https://www.youtube.com/@IShowSpeed")["results"]
 
         assert len(results) == 1
         assert results[0]["channel_name"] == "IShowSpeed"
@@ -212,7 +269,7 @@ class TestSearchChannelMode:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCabc", "title": "Kanal A", "uploads_playlist_id": "UUabc",
         })
-        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None: [
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
             {"video_id": "v1", "title": "Video 1"}
         ])
         monkeypatch.setattr(fetch, "fetch_transcript", lambda video_id, languages=None: [
@@ -223,7 +280,7 @@ class TestSearchChannelMode:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCxyz", "title": "Kanal B", "uploads_playlist_id": "UUxyz",
         })
-        results = search.search("umumiy so'z", channel_id="UCxyz")
+        results = search.search("umumiy so'z", channel_id="UCxyz")["results"]
 
         assert results == []  # UCabc'dagi moslik UCxyz qidiruviga chiqmasligi kerak
 
@@ -237,7 +294,7 @@ class TestIndexChannel:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
         })
-        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None: [
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
             {"video_id": "v1", "title": "Video 1"}
         ])
         calls = {"n": 0}
@@ -265,7 +322,7 @@ class TestIndexChannel:
         monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
             "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
         })
-        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None: [
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
             {"video_id": "v1", "title": "Video 1"}
         ])
         calls = {"n": 0}
@@ -280,6 +337,9 @@ class TestIndexChannel:
 
         assert store.is_channel_indexed(info["channel_id"]) is False
         assert store.is_video_indexed("v1") is False
+        # Chaqiruvchi (`search()`) bloklanishni "hech narsa topilmadi"dan
+        # farqlab foydalanuvchiga ko'rsata olishi uchun bu bayroq kerak.
+        assert info["blocked"] is True
 
         # Blok "tugagandan" keyin (endi muvaffaqiyatli) qayta chaqirilsa,
         # video haqiqatan ham qayta uriniladi — abadiy o'tkazib yuborilmaydi.
@@ -290,3 +350,47 @@ class TestIndexChannel:
 
         assert store.is_channel_indexed(info["channel_id"]) is True
         assert store.get_video_segments("v1") == [{"text": "endi ishlayapti", "start_time": 0.0, "end_time": 1.0}]
+
+    def test_date_ranged_indexing_does_not_touch_channel_level_indexed_flag(self, monkeypatch):
+        # Sana oralig'i bilan indexlash "eng so'nggi N video" kesimidan
+        # butunlay boshqa — kanalni "to'liq indexlangan" deb belgilasa,
+        # keyingi (oralig'siz) qidiruv ham indexlangan deb noto'g'ri
+        # o'ylab, videolarni tekshirmay qolib ketardi.
+        monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
+            "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
+        })
+        captured_kwargs = {}
+
+        def fake_list(playlist_id, max_results=None, **kw):
+            captured_kwargs.update(kw)
+            return [{"video_id": "old_vid", "title": "Eski video", "published_at": "2023-02-01"}]
+
+        monkeypatch.setattr(fetch, "list_channel_videos", fake_list)
+        monkeypatch.setattr(fetch, "fetch_transcript", lambda video_id, languages=None: [
+            {"text": "2023-yilgi kontent", "start": 0.0, "duration": 1.0}
+        ])
+
+        info = search.index_channel("UCabc", published_after="2023-01-01", published_before="2023-03-01")
+
+        assert captured_kwargs == {"published_after": "2023-01-01", "published_before": "2023-03-01"}
+        assert info["blocked"] is False
+        assert store.is_video_indexed("old_vid") is True
+        # ASOSIY tekshiruv: kanal DARAJASIDA "to'liq indexlangan" deb
+        # BELGILANMAGAN — bu boshqa (recency) indexlash holati.
+        assert store.is_channel_indexed("UCabc") is False
+
+    def test_published_at_flows_from_list_channel_videos_to_store(self, monkeypatch):
+        monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
+            "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
+        })
+        monkeypatch.setattr(fetch, "list_channel_videos", lambda playlist_id, max_results=None, **kw: [
+            {"video_id": "v1", "title": "Video 1", "published_at": "2023-07-04"}
+        ])
+        monkeypatch.setattr(fetch, "fetch_transcript", lambda video_id, languages=None: [
+            {"text": "sana bilan", "start": 0.0, "duration": 1.0}
+        ])
+
+        search.index_channel("UCabc")
+
+        assert store.find_matching_video_ids("UCabc", "sana", published_after="2023-06-01") == ["v1"]
+        assert store.find_matching_video_ids("UCabc", "sana", published_after="2023-08-01") == []
