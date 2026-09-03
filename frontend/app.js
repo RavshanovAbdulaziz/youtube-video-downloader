@@ -1063,6 +1063,19 @@ function showFindSourceError(msg) {
 function renderFindSourceResult(data) {
   findSourceResult.textContent = "";
 
+  // Har qidiruvdan oldin indeks avtomatik yangilanadi — nima qilinganini
+  // ko'rsatamiz, aks holda so'rov nega uzoqroq ketgani tushunarsiz bo'ladi.
+  const update = data.catch_up || {};
+  if (update.indexed > 0 || update.pending > 0) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    const parts = [];
+    if (update.indexed > 0) parts.push(`Indeksga ${update.indexed} ta yangi video qo'shildi.`);
+    if (update.pending > 0) parts.push(`Yana ${update.pending} tasi navbatda — tugatish uchun qayta bosing.`);
+    note.textContent = parts.join(" ");
+    findSourceResult.appendChild(note);
+  }
+
   if (!data.found) {
     const msg = document.createElement("p");
     msg.className = "hint";

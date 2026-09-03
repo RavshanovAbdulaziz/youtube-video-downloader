@@ -146,3 +146,88 @@ class TestPublishedAtFilter:
         # chiqmaydi (moslashtiriladigan matni yo'q).
         store.save_video_segments("no-transcript", "UCabc", "K", "V", [], published_at="2023-05-05")
         assert store.find_matching_video_ids("UCabc", "gaming") == []
+
+
+def _save(video_id, texts, channel_id="UCabc", published_at=None):
+    store.save_video_segments(
+        video_id, channel_id, "Kanal", f"Video {video_id}",
+        [{"text": t, "start_time": float(i * 10), "end_time": float(i * 10 + 5)}
+         for i, t in enumerate(texts)],
+        published_at,
+    )
+
+
+class TestTermIndex:
+    """``video_terms`` teskari indeksi — "shu so'z qaysi videolarda bor"
+    savoliga butun jadvalni skanerlamasdan javob beradi."""
+
+    def test_finds_videos_containing_the_word(self):
+        _save("v1", ["a marker and a sharpie"])
+        _save("v2", ["completely different subject"])
+
+        assert store.find_videos_with_term("marker") == ["v1"]
+
+    def test_matches_whole_words_not_substrings(self):
+        # Avvalgi LIKE '%so'z%' usuli "mark"ni "marker" ichidan ham topardi
+        # va hujjat chastotasini shishirardi.
+        _save("v1", ["a marker"])
+
+        assert store.find_videos_with_term("mark") == []
+        assert store.find_videos_with_term("marker") == ["v1"]
+
+    def test_ignores_caption_artifacts_and_stopwords(self):
+        _save("v1", ["[Music] the marker"])
+
+        assert store.find_videos_with_term("music") == []
+        assert store.find_videos_with_term("the") == []
+        assert store.find_videos_with_term("marker") == ["v1"]
+
+    def test_scoped_to_channel_when_given(self):
+        _save("v1", ["marker"], channel_id="UCabc")
+        _save("v2", ["marker"], channel_id="UCxyz")
+
+        assert store.find_videos_with_term("marker", channel_id="UCabc") == ["v1"]
+        assert sorted(store.find_videos_with_term("marker")) == ["v1", "v2"]
+
+    def test_is_not_capped_by_default(self):
+        # Ro'yxat uzunligi hujjat chastotasi sifatida ishlatiladi — uni
+        # kesish IDF'ni buzadi (ommaviy so'z "nodir" bo'lib ko'rinadi).
+        for i in range(250):
+            _save(f"v{i}", ["marker"])
+
+        assert len(store.find_videos_with_term("marker")) == 250
+
+    def test_reindexing_a_video_replaces_its_terms(self):
+        _save("v1", ["marker"])
+        _save("v1", ["sharpie"])
+
+        assert store.find_videos_with_term("marker") == []
+        assert store.find_videos_with_term("sharpie") == ["v1"]
+
+    def test_rebuild_restores_the_index_from_segments(self):
+        _save("v1", ["a marker and a sharpie"])
+        with store._connect() as conn:  # eski (indekssiz) bazani taqlid qilamiz
+            conn.execute("DELETE FROM video_terms")
+
+        # Indeks bo'sh bo'lsa eski skanerlashga qaytadi — natija to'g'ri qoladi.
+        assert store.find_videos_with_term("marker") == ["v1"]
+
+        assert store.rebuild_term_index() == 1
+        assert store.find_videos_with_term("marker") == ["v1"]
+
+
+class TestIndexMetadata:
+    def test_lists_channels_that_have_segments(self):
+        _save("v1", ["matn"], channel_id="UCabc")
+        _save("v2", ["matn"], channel_id="UCxyz")
+
+        assert sorted(store.list_indexed_channel_ids()) == ["UCabc", "UCxyz"]
+
+    def test_latest_indexed_date_is_the_newest_published_at(self):
+        _save("v1", ["matn"], published_at="2026-01-10")
+        _save("v2", ["matn"], published_at="2026-03-04")
+
+        assert store.get_latest_indexed_date("UCabc") == "2026-03-04"
+
+    def test_latest_indexed_date_is_none_for_unknown_channel(self):
+        assert store.get_latest_indexed_date("UCnope") is None

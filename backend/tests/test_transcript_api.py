@@ -15,6 +15,17 @@ def client():
     return TestClient(main.app)
 
 
+@pytest.fixture(autouse=True)
+def no_network_catch_up(monkeypatch):
+    """``/find-source`` endi qidirishdan oldin indeksni yangilaydi. Testlar
+    tarmoqqa chiqmasligi uchun standart holatda bu bosqich o'chiriladi;
+    yangilashning O'ZINI tekshiradigan testlar buni qayta belgilaydi."""
+    monkeypatch.setattr(
+        search_module, "catch_up",
+        lambda channel_ref=None, **kw: {"indexed": 0, "pending": 0, "blocked": False},
+    )
+
+
 class TestTranscriptSearchEndpoint:
     def test_returns_results_for_valid_query(self, client, monkeypatch):
         monkeypatch.setattr(
@@ -231,6 +242,50 @@ class TestTranscriptSearchEndpoint:
     def test_find_source_missing_clip_url_returns_422(self, client):
         res = client.post("/api/transcript/find-source", json={})
         assert res.status_code == 422
+
+    def test_find_source_updates_the_index_before_searching(self, client, monkeypatch):
+        # Kanal bir marta indexlangach, keyin chiqqan streamlar indeksga
+        # tushmasdi — ya'ni kechagi streamdan olingan klip hech qachon
+        # topilmasdi va foydalanuvchi kanalni qo'lda qayta indexlashi
+        # kerak bo'lardi. Endi bu avtomatik bajariladi.
+        order = []
+        monkeypatch.setattr(search_module, "catch_up", lambda channel_ref=None, **kw: (
+            order.append(("catch_up", channel_ref)) or {"indexed": 3, "pending": 0, "blocked": False}
+        ))
+        monkeypatch.setattr(find_source_module, "find_source", lambda *a, **k: (
+            order.append(("find_source", None)) or {
+                "found": False, "confident": False, "clip_id": "x",
+                "clip_language": None, "match": None,
+            }
+        ))
+
+        res = client.post("/api/transcript/find-source",
+                          json={"clip_url": "B4uytxWGWEk", "channel_id": "@IShowSpeed"})
+
+        assert res.status_code == 200
+        assert order == [("catch_up", "@IShowSpeed"), ("find_source", None)]
+        assert res.json()["catch_up"]["indexed"] == 3
+
+    def test_find_source_still_works_when_index_update_fails(self, client, monkeypatch):
+        # Yangilash — qulaylik, majburiy shart emas: API kaliti yo'q yoki
+        # YouTube bloklagan bo'lsa ham, mavjud indeks ustida qidiruv
+        # davom etishi kerak.
+        def boom(channel_ref=None, **kw):
+            raise fetch.ConfigError("YOUTUBE_API_KEY o'rnatilmagan")
+
+        monkeypatch.setattr(search_module, "catch_up", boom)
+        monkeypatch.setattr(find_source_module, "find_source", lambda *a, **k: {
+            "found": True, "confident": True, "clip_id": "x", "clip_language": "en",
+            "match": {"video_id": "v1", "video_title": "T", "channel_name": "C",
+                      "published_at": None, "start_time": 1.0, "score": 20.0,
+                      "margin": 3.0, "matched_terms": ["a"], "url": "https://y/watch?v=v1"},
+        })
+
+        res = client.post("/api/transcript/find-source", json={"clip_url": "B4uytxWGWEk"})
+
+        assert res.status_code == 200
+        assert res.json()["found"] is True
+        assert "YOUTUBE_API_KEY" in res.json()["catch_up"]["error"]
 
     def test_invalid_date_format_returns_400(self, client, monkeypatch):
         monkeypatch.setattr(search_module, "search", lambda *a, **k: (_ for _ in ()).throw(

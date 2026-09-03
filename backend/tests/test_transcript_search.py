@@ -394,3 +394,122 @@ class TestIndexChannel:
 
         assert store.find_matching_video_ids("UCabc", "sana", published_after="2023-06-01") == ["v1"]
         assert store.find_matching_video_ids("UCabc", "sana", published_after="2023-08-01") == []
+
+
+class TestCatchUp:
+    """Indeksni avtomatik yangilash — kanal bir marta indexlangach, ertasiga
+    chiqqan streamlar indeksga tushmay qolardi va ulardan olingan klip hech
+    qachon topilmasdi."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_db(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(paths, "TRANSCRIPT_DB_FILE", str(tmp_path / "catch_up_test.db"))
+
+    def _seed(self, video_id="old_vid", published_at="2026-01-10", channel_id="UCabc"):
+        store.save_video_segments(
+            channel_id=channel_id, video_id=video_id, channel_name="Kanal",
+            video_title="Eski", published_at=published_at,
+            segments=[{"text": "eski matn", "start_time": 0.0, "end_time": 1.0}],
+        )
+
+    def _patch_channel(self, monkeypatch, videos):
+        monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
+            "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
+        })
+        captured = {}
+
+        def fake_list(playlist_id, max_results=None, published_after=None, published_before=None):
+            captured["published_after"] = published_after
+            return videos
+
+        monkeypatch.setattr(fetch, "list_channel_videos", fake_list)
+        monkeypatch.setattr(fetch, "fetch_transcript", lambda video_id, languages=None: [
+            {"text": f"yangi {video_id}", "start": 0.0, "duration": 1.0}
+        ])
+        return captured
+
+    def test_indexes_videos_published_after_the_newest_indexed_one(self, monkeypatch):
+        self._seed(published_at="2026-01-10")
+        self._patch_channel(monkeypatch, [
+            {"video_id": "new_vid", "title": "Yangi", "published_at": "2026-01-12"},
+        ])
+
+        result = search.catch_up("UCabc")
+
+        assert result["indexed"] == 1
+        assert store.is_video_indexed("new_vid") is True
+
+    def test_asks_youtube_only_for_videos_newer_than_the_index(self, monkeypatch):
+        self._seed(published_at="2026-01-10")
+        captured = self._patch_channel(monkeypatch, [])
+
+        search.catch_up("UCabc")
+
+        assert captured["published_after"] == "2026-01-10"
+
+    def test_already_indexed_videos_are_not_refetched(self, monkeypatch):
+        self._seed(video_id="old_vid", published_at="2026-01-10")
+        self._patch_channel(monkeypatch, [
+            {"video_id": "old_vid", "title": "Eski", "published_at": "2026-01-10"},
+        ])
+
+        assert search.catch_up("UCabc")["indexed"] == 0
+
+    def test_reports_how_many_are_left_over_the_limit(self, monkeypatch):
+        self._seed(published_at="2026-01-10")
+        self._patch_channel(monkeypatch, [
+            {"video_id": f"v{i}", "title": f"V{i}", "published_at": "2026-01-12"}
+            for i in range(5)
+        ])
+
+        result = search.catch_up("UCabc", max_videos=2)
+
+        assert result["indexed"] == 2
+        assert result["pending"] == 3
+
+    def test_updates_every_indexed_channel_when_none_is_given(self, monkeypatch):
+        self._seed(video_id="a_old", channel_id="UCabc", published_at="2026-01-10")
+        self._seed(video_id="b_old", channel_id="UCxyz", published_at="2026-01-10")
+        seen = []
+
+        monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
+            "channel_id": ref, "title": "Kanal", "uploads_playlist_id": f"UU{ref}",
+        })
+
+        def fake_list(playlist_id, max_results=None, published_after=None, published_before=None):
+            seen.append(playlist_id)
+            return []
+
+        monkeypatch.setattr(fetch, "list_channel_videos", fake_list)
+
+        search.catch_up()
+
+        assert sorted(seen) == ["UUUCabc", "UUUCxyz"]
+
+    def test_channel_with_nothing_indexed_is_skipped(self, monkeypatch):
+        # Bu "yangilash" emas, to'liq indexlash ishi — catch_up unga tegmaydi.
+        called = []
+        monkeypatch.setattr(fetch, "resolve_channel", lambda ref: {
+            "channel_id": "UCabc", "title": "Kanal", "uploads_playlist_id": "UUabc",
+        })
+        monkeypatch.setattr(fetch, "list_channel_videos",
+                            lambda *a, **kw: called.append(1) or [])
+
+        assert search.catch_up("UCabc") == {"indexed": 0, "pending": 0, "blocked": False}
+        assert called == []
+
+    def test_blocked_fetch_is_reported_and_video_stays_unindexed(self, monkeypatch):
+        self._seed(published_at="2026-01-10")
+        self._patch_channel(monkeypatch, [
+            {"video_id": "new_vid", "title": "Yangi", "published_at": "2026-01-12"},
+        ])
+
+        def blocked(video_id, languages=None):
+            raise fetch.TranscriptFetchBlocked("IP bloklangan")
+
+        monkeypatch.setattr(fetch, "fetch_transcript", blocked)
+
+        result = search.catch_up("UCabc")
+
+        assert result["blocked"] is True
+        assert store.is_video_indexed("new_vid") is False

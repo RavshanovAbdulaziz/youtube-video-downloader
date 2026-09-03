@@ -11,11 +11,17 @@ import json
 import sys
 
 from . import search as search_module
+from . import store
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="YouTube transkript qidiruv (CLI)")
-    parser.add_argument("query", help="Qidiriladigan so'z yoki ibora")
+    parser.add_argument("query", nargs="?", help="Qidiriladigan so'z yoki ibora")
+    parser.add_argument(
+        "--rebuild-term-index", dest="rebuild_term_index", action="store_true",
+        help="Teskari so'z indeksini mavjud transkriptlardan qayta qurish "
+             "(migratsiya — indeks qo'shilishidan oldin indexlangan bazalar uchun)",
+    )
     parser.add_argument(
         "--channel", dest="channel_id", default=None,
         help="Kanal ID / @handle / URL (berilmasa — butun YouTube bo'yicha qidiradi)",
@@ -31,6 +37,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Natijani JSON sifatida chiqarish")
     args = parser.parse_args(argv)
+
+    if args.rebuild_term_index:
+        count = store.rebuild_term_index()
+        print(f"{count} ta video uchun teskari so'z indeksi qayta qurildi.")
+        return 0
+
+    if not args.query:
+        parser.error("qidiruv so'zi kerak (yoki --rebuild-term-index)")
 
     data = search_module.search(
         args.query, channel_id=args.channel_id, max_videos=args.max_videos,

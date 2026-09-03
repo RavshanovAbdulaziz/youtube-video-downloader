@@ -94,6 +94,39 @@ class TestFindSource:
         assert res["match"]["video_title"] == "45 million in Thailand"
         assert res["match"]["published_at"] == "2025-10-21"
 
+    def test_reports_scene_start_not_middle_of_the_window(self, monkeypatch):
+        # Klipdagi suhbat oynadan (60s) uzun bo'lsa, eng ko'p ball to'plagan
+        # oyna sahna O'RTASIGA tushadi va havola sahna boshlanganidan keyin
+        # ochilardi. Mos kelgan so'zlar birinchi uchragan joy ko'rsatilishi
+        # kerak (o'lchangan holat: sahna 2:30:10, havola 2:30:38 edi).
+        self._seed_stream("stream", "Stream", [
+            (500, "unrelated chatter about the weather"),
+            (900, "officer says you have a warrant"),      # <- sahna boshi
+            (930, "unpaid speeding ticket and the court"),
+            (960, "warrant court ticket speeding unpaid"),  # <- eng zich joy
+            (990, "warrant court ticket speeding unpaid"),
+        ])
+        self._clip(monkeypatch, "warrant unpaid speeding ticket court")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        # 900 — "warrant" birinchi uchragan segment, 960 emas.
+        assert res["match"]["start_time"] == 900
+
+    def test_scene_start_does_not_run_away_into_unrelated_talk(self, monkeypatch):
+        # Orqaga qarash chegaralangan: undan oldingi mos kelmaydigan
+        # suhbatga o'tib ketmasligi kerak.
+        self._seed_stream("stream", "Stream", [
+            (100, "warrant"),                               # juda uzoqda, hisobga olinmasin
+            (900, "warrant court ticket speeding unpaid"),
+        ])
+        self._clip(monkeypatch, "warrant unpaid speeding ticket court")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["match"]["start_time"] >= 900 - find_source.SCENE_LOOKBACK_SECONDS
+
     def test_reports_timestamp_of_the_best_window(self, monkeypatch):
         self._seed_stream("stream_right", "Stream", [
             (100, "totally unrelated chatter about food"),
@@ -226,6 +259,31 @@ class TestFindSource:
         assert res["found"] is True
         assert res["clip_language"] == "uz"
         assert res["match"]["video_id"] == "uz_stream"
+
+    def test_stops_after_a_confident_match_instead_of_fetching_every_language(self, monkeypatch):
+        # Har bir til uchun klip transkriptini olish ~10 soniya turadi.
+        # Birinchi til ishonchli javob bergach, qolganini so'rash shart emas.
+        for i in range(8):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [(10, f"unrelated topic {i}")])
+        self._seed_stream("target", "Target", [
+            (600, "sharpie autograph helicopter trombone kayak walrus"),
+            (620, "sharpie autograph helicopter trombone kayak walrus"),
+        ])
+        asked = []
+
+        def fake_fetch(video_id, languages=None):
+            lang = (languages or ["en"])[0]
+            asked.append(lang)
+            return [{"text": "sharpie autograph helicopter trombone kayak walrus "
+                             "sharpie autograph helicopter trombone kayak walrus",
+                     "start": 0.0, "duration": 5.0}]
+
+        monkeypatch.setattr(fetch, "fetch_transcript", fake_fetch)
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["confident"] is True
+        assert asked == ["en"]
 
     def test_raises_blocked_when_clip_transcript_is_blocked_in_all_languages(self, monkeypatch):
         def fake_fetch(video_id, languages=None):

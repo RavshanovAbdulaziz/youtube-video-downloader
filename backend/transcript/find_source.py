@@ -42,7 +42,7 @@ import re
 import statistics
 from collections import Counter
 
-from . import fetch, store
+from . import fetch, store, text
 
 DEFAULT_WINDOW_SECONDS = 60.0   # bitta taqqoslash oynasining uzunligi
 DEFAULT_STEP_SECONDS = 15.0     # oyna qadami (oynalar ustma-ust tushadi)
@@ -76,32 +76,18 @@ MIN_CONFIDENT_SCORE = 12.0
 MIN_CONFIDENT_MARGIN = 2.0
 MIN_CONFIDENT_TERMS = 5     # bitta-ikkita nodir so'z tasodifan mos kelishi mumkin
 
+# Sahna boshini aniqlashda eng yuqori ballli oynadan qancha orqaga
+# qaraladi (klipdagi suhbat oynadan uzun bo'lishi mumkin).
+SCENE_LOOKBACK_SECONDS = 120.0
+
 _VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 _URL_ID_RE = re.compile(
     r"(?:youtu\.be/|/shorts/|/live/|/embed/|[?&]v=)([A-Za-z0-9_-]{11})"
 )
-_WORD_RE = re.compile(r"[a-z’']+", re.UNICODE)
-
-# Subtitr artefaktlari: "[Music]", "[Applause]", "[musiqa]", "(laughs)" va
-# ">>" so'zlovchi belgisi. Bular NUTQ EMAS — deyarli har bir videoda
-# uchraydi, ya'ni moslikka hech qanday dalil qo'shmaydi, lekin ballni
-# shishiradi ("music" so'zi aynan shu tarzda xato javob bergan edi).
-_CAPTION_ARTIFACT_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)|&gt;&gt;|>>")
-
-# Ingliz + o'zbek eng keng tarqalgan so'zlari: bular deyarli har bir
-# segmentda uchraydi, shuning uchun moslikni aniqlashda foydasiz (aksincha,
-# tasodifiy "shovqin" ball qo'shadi).
-STOPWORDS = frozenset("""
-a an the and or but if is are was were be been being to of in on at for with that this
-these those it its i you he she they we me him her them my your his their our do does
-did done have has had not no yes so as by from up out about into over after what why
-how when where who whom which there here just got get gonna wanna like bro man oh yo uh
-um huh yeah nah ok okay all right well now then can could would should will one two
-know think see say said go going come came want need really much many very too
-va yoki lekin agar men sen siz biz ular bu shu u bor yoq yo'q ha nima nega qanday
-qachon qayerda kim uchun bilan uchun ham emas edi ekan bo'ldi bo'lgan qildi qilgan
-men'ga menga senga sizga bizga ularga aka birodar do'stim juda mana ana keyin oldin
-""".split())
+# So'zlarga ajratish ``text.py``da — ``store`` teskari indeksni AYNAN
+# shu qoida bilan quradi, ikkalasi ajralib qolmasligi kerak.
+_terms = text.terms
+STOPWORDS = text.STOPWORDS
 
 
 def parse_video_id(ref: str) -> str:
@@ -138,17 +124,6 @@ def _resolve_channel_id(channel_ref: str | None) -> str | None:
     return fetch.resolve_channel(channel_ref)["channel_id"]
 
 
-def _terms(text: str) -> list[str]:
-    """Matndan ma'noli so'zlar — kichik harf, stop-so'zlarsiz, 3 harfdan
-    uzun, subtitr artefaktlarisiz."""
-    out = []
-    for word in _WORD_RE.findall(_CAPTION_ARTIFACT_RE.sub(" ", text.lower())):
-        word = word.strip("'’")
-        if len(word) > 2 and word not in STOPWORDS:
-            out.append(word)
-    return out
-
-
 def _idf(total_videos: int, doc_frequency: int) -> float:
     """BM25 uslubidagi IDF — so'z qancha kam videoda uchrasa, shuncha qimmat.
 
@@ -180,29 +155,73 @@ def _score_windows(
     if not segments:
         return 0.0, 0.0, []
 
-    prepared = [(seg["start_time"], _terms(seg["text"])) for seg in segments]
+    # Faqat klipda bor va vazni musbat so'zlar qiziq — qolgani ballga
+    # umuman ta'sir qilmaydi. Oldindan filtrlash oyna sanog'ini kichik
+    # tutadi (uzun streamda segmentlarning aksariyati bo'sh bo'lib qoladi).
+    relevant = {term for term in clip_counts if idf.get(term, 0.0) > 0}
+    prepared = [
+        (seg["start_time"], [w for w in _terms(seg["text"]) if w in relevant])
+        for seg in segments
+    ]
     end = prepared[-1][0]
 
-    best_score, best_start, best_shared = 0.0, 0.0, []
+    # Sirg'aluvchi oyna IKKI KO'RSATKICH bilan: segmentlar vaqt bo'yicha
+    # tartiblangani uchun har bir oyna uchun butun ro'yxatni qayta ko'rib
+    # chiqish shart emas — oynaga kirganlari qo'shiladi, chiqqanlari
+    # ayriladi. Avvalgi to'liq qayta ko'rib chiqish 6 soatlik streamda
+    # ~23 million iteratsiya berardi (bitta so'rov o'nlab soniya).
+    windows: list[tuple[float, float, list[str]]] = []  # (boshlanish, ball, umumiy so'zlar)
+    counts: Counter = Counter()
+    lo = hi = 0
     start = prepared[0][0]
     while start <= end:
         stop = start + window
-        window_counts: Counter = Counter()
-        for seg_start, words in prepared:
-            if start <= seg_start < stop:
-                window_counts.update(words)
+        while hi < len(prepared) and prepared[hi][0] < stop:
+            counts.update(prepared[hi][1])
+            hi += 1
+        while lo < len(prepared) and prepared[lo][0] < start:
+            for word in prepared[lo][1]:
+                if counts[word] <= 1:
+                    del counts[word]
+                else:
+                    counts[word] -= 1
+            lo += 1
+
         score = 0.0
         shared = []
-        for term, clip_count in clip_counts.items():
-            found = window_counts.get(term, 0)
-            weight = idf.get(term, 0.0)
-            if found and weight > 0:
-                score += weight * min(clip_count, found, MAX_TERM_REPEAT)
-                shared.append(term)
-        if score > best_score:
-            best_score, best_start, best_shared = score, start, shared
+        for term, found in counts.items():
+            score += idf[term] * min(clip_counts[term], found, MAX_TERM_REPEAT)
+            shared.append(term)
+        windows.append((start, score, shared))
         start += step
-    return best_score, best_start, best_shared
+
+    best_i = max(range(len(windows)), key=lambda i: windows[i][1])
+    best_start, best_score, best_shared = windows[best_i]
+    if best_score <= 0:
+        return 0.0, 0.0, []
+
+    # Sahna BOSHINI topish. Eng yuqori ballli oynaning boshlanishi sahna
+    # boshi EMAS: oyna sahna o'rtasiga tushishi mumkin (klipdagi suhbat
+    # 60s oynadan uzun bo'lsa shunday bo'ladi) va havola sahna boshlangandan
+    # keyin ochilib, foydalanuvchi boshini o'tkazib yuborardi.
+    #
+    # Shuning uchun oynadan biroz oldinroqdan boshlab, MOS KELGAN so'zlar
+    # birinchi marta uchraydigan segment izlanadi — aynan shu joyda klipdagi
+    # suhbat boshlanadi. Oyna ballini nisbat bo'yicha orqaga surishdan
+    # aniqroq: ball butun oyna bo'yicha o'rtachalashadi, bu esa konkret
+    # segmentni ko'rsatadi.
+    shared_terms = set(best_shared)
+    scene_start = best_start
+    earliest = best_start - SCENE_LOOKBACK_SECONDS
+    for seg_start, words in prepared:
+        if seg_start < earliest:
+            continue
+        if seg_start >= best_start + window:
+            break
+        if shared_terms.intersection(words):
+            scene_start = seg_start
+            break
+    return best_score, scene_start, best_shared
 
 
 def _match_against_index(
@@ -322,6 +341,13 @@ def find_source(
         match = _match_against_index(clip_raw, channel_id, window, step)
         if match:
             candidates.append((match, language))
+            # Ishonchli javob topildi — qolgan tillarni so'rash shart emas
+            # (har bir til uchun klip transkriptini olish ~10 soniya).
+            # Faqat ISHONCHLI natijada to'xtaymiz: zaif moslikda boshqa
+            # til to'g'riroq javob berishi mumkin, va aynan shunday holat
+            # kuzatilgan ham (inglizcha yo'l xato, o'zbekchasi to'g'ri).
+            if _is_confident(match):
+                break
 
     if not candidates and blocked_errors == len(languages):
         raise fetch.TranscriptFetchBlocked(
@@ -340,18 +366,23 @@ def find_source(
     if best["score"] < MIN_SCORE or best["margin"] < MIN_MARGIN:
         return _no_match(clip_id)
 
-    confident = (
-        best["score"] >= MIN_CONFIDENT_SCORE
-        and best["margin"] >= MIN_CONFIDENT_MARGIN
-        and len(best["matched_terms"]) >= MIN_CONFIDENT_TERMS
-    )
     return {
         "found": True,
-        "confident": confident,
+        "confident": _is_confident(best),
         "clip_id": clip_id,
         "clip_language": best_language,
         "match": best,
     }
+
+
+def _is_confident(match: dict) -> bool:
+    """Moslik "ishonchli" darajaga yetdimi — uchala mezon ham bajarilishi
+    kerak (mezonlar izohi yuqorida)."""
+    return (
+        match["score"] >= MIN_CONFIDENT_SCORE
+        and match["margin"] >= MIN_CONFIDENT_MARGIN
+        and len(match["matched_terms"]) >= MIN_CONFIDENT_TERMS
+    )
 
 
 def _no_match(clip_id: str) -> dict:
