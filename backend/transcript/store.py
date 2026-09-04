@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections import Counter
 from contextlib import contextmanager
 
 import paths
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS video_terms (
     term       TEXT NOT NULL,
     video_id   TEXT NOT NULL,
     channel_id TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (term, video_id)
 );
 CREATE INDEX IF NOT EXISTS idx_video_terms_video ON video_terms(video_id);
@@ -79,6 +81,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(transcript_segments)")}
     if "published_at" not in columns:
         conn.execute("ALTER TABLE transcript_segments ADD COLUMN published_at TEXT")
+
+    # ``count`` (2026-09-04) — nomzod tanlashda so'zning shunchaki "bor/yo'q"
+    # ligi o'rniga necha marta uchraganini ishlatish uchun (pastdagi
+    # find_videos_with_term_counts'ga qarang). Eski qatorlarda DEFAULT 1
+    # bilan to'ldiriladi — bu haqiqiy chastota emas, "--rebuild-term-index"
+    # bajarilgunicha eski (bor/yo'q) xatti-harakatga teng bo'lib qoladi.
+    term_columns = {row["name"] for row in conn.execute("PRAGMA table_info(video_terms)")}
+    if "count" not in term_columns:
+        conn.execute("ALTER TABLE video_terms ADD COLUMN count INTEGER NOT NULL DEFAULT 1")
 
 
 @contextmanager
@@ -160,13 +171,19 @@ def save_video_segments(
 
 
 def _save_terms(conn, video_id: str, channel_id: str, segments: list[dict]) -> None:
-    """Videodagi turli so'zlarni teskari indeksga yozadi."""
-    distinct = set()
+    """Videodagi so'zlarning takrorlanish sonini teskari indeksga yozadi.
+
+    Shunchaki "bor/yo'q" emas, aynan SON kerak: ``find_source``dagi nomzod
+    tanlash shu songa qarab ballaydi (bir marta o'tgan so'z bilan o'nlab
+    marta takrorlangan so'zni farqlash uchun — soatlab davom etgan uzun
+    streamda deyarli har qanday so'z KAMIDA bir marta uchraydi, shuning
+    uchun oddiy "bor/yo'q" nomzodlarni bir-biridan ajrata olmay qoladi)."""
+    counts: Counter = Counter()
     for seg in segments:
-        distinct.update(text.terms(seg["text"]))
+        counts.update(text.terms(seg["text"]))
     conn.executemany(
-        "INSERT OR IGNORE INTO video_terms (term, video_id, channel_id) VALUES (?, ?, ?)",
-        [(term, video_id, channel_id) for term in distinct],
+        "INSERT OR REPLACE INTO video_terms (term, video_id, channel_id, count) VALUES (?, ?, ?, ?)",
+        [(term, video_id, channel_id, count) for term, count in counts.items()],
     )
 
 
@@ -313,6 +330,50 @@ def _find_videos_with_term_scan(conn, term: str, channel_id: str | None, limit: 
             (needle, limit),
         ).fetchall()
     return [row["video_id"] for row in rows]
+
+
+def find_videos_with_term_counts(
+    term: str, channel_id: str | None = None,
+) -> dict[str, int]:
+    """``find_videos_with_term`` bilan bir xil, lekin har bir video uchun
+    so'z NECHA MARTA uchraganini ham qaytaradi (``{video_id: count}``).
+
+    ``find_source.py``dagi nomzod tanlash uchun: so'zning shunchaki
+    "bor/yo'q"ligi soatlab davom etgan streamda deyarli hech narsani
+    ajratmaydi (deyarli har qanday so'z KAMIDA bir marta albatta uchraydi)
+    — chastota esa haqiqiy moslikni tasodifiy ustma-tushlikdan ajratadi.
+
+    Teskari indeks qurilmagan eski bazada ``_find_videos_with_term_scan``ga
+    qaytadi va o'sha video ichida so'z UCHRAGAN SEGMENTLAR sonini chastota
+    o'rnida ishlatadi (aniq so'z chastotasi emas, lekin oqilona taxmin —
+    bu yo'l ``--rebuild-term-index`` bajarilgunicha vaqtinchalik)."""
+    with _connect() as conn:
+        if not conn.execute("SELECT 1 FROM video_terms LIMIT 1").fetchone():
+            needle = _escape_like(term)
+            if channel_id:
+                rows = conn.execute(
+                    "SELECT video_id, COUNT(*) c FROM transcript_segments "
+                    "WHERE channel_id = ? AND text LIKE ? ESCAPE '\\' GROUP BY video_id",
+                    (channel_id, needle),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT video_id, COUNT(*) c FROM transcript_segments "
+                    "WHERE text LIKE ? ESCAPE '\\' GROUP BY video_id",
+                    (needle,),
+                ).fetchall()
+            return {row["video_id"]: row["c"] for row in rows}
+        if channel_id:
+            rows = conn.execute(
+                "SELECT video_id, count FROM video_terms WHERE term = ? AND channel_id = ?",
+                (term, channel_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT video_id, count FROM video_terms WHERE term = ?",
+                (term,),
+            ).fetchall()
+        return {row["video_id"]: row["count"] for row in rows}
 
 
 def count_indexed_videos(channel_id: str | None = None) -> int:

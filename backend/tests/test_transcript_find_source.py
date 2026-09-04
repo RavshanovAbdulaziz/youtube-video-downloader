@@ -205,6 +205,81 @@ class TestFindSource:
         assert res["found"] is False
         assert res["match"] is None
 
+    def test_candidate_frequency_beats_a_tied_presence_only_crowd(self, monkeypatch):
+        # ASOSIY REGRESSIYA TESTI (2026-09-04): agar KO'P video klipning
+        # so'zlarini KAMIDA bir marta o'z ichiga olsa, ular eski "bor/yo'q"
+        # (Boolean) nomzod tanlashda BAB-BARAVAR eng yuqori ballga to'planardi
+        # va MAX_CANDIDATE_VIDEOS chegarasi haqiqiy manbani ularning ichida
+        # tasodifan (indeks tartibiga qarab) kesib tashlardi. Haqiqiy misolda
+        # (IShowSpeed klipi) 1174 videodan 1061 tasi shu tarzda tenglashib,
+        # to'g'ri video 12talik chegaradan 317-o'rinda qolib ketgan edi.
+        #
+        # Endi so'z NECHA MARTA uchraganini hisobga olamiz — klipda ikki marta
+        # aytilgan so'zlar manba videoda ham ikki marta, "durrang"da esa bir
+        # marta uchraydi, shuning uchun manba endi tepaga chiqadi va kesilib
+        # qolmaydi.
+        monkeypatch.setattr(find_source, "MAX_CANDIDATE_VIDEOS", 3)
+
+        noise_count = find_source.MAX_CANDIDATE_VIDEOS + 3
+        for i in range(noise_count):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [
+                (10, "sharpie autograph helicopter"),  # har biri BITTA marta
+            ])
+        self._seed_stream("true_source", "Manba", [
+            (600, "sharpie autograph helicopter"),
+            (610, "sharpie autograph helicopter"),  # xuddi klipdagidek IKKI marta
+        ])
+        for i in range(8):
+            self._seed_stream(f"unrelated{i}", f"Unrelated {i}", [(10, "banana lemon quiz")])
+        self._clip(monkeypatch, "sharpie autograph helicopter sharpie autograph helicopter")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        assert res["match"]["video_id"] == "true_source"
+
+    def test_falls_back_to_exhaustive_check_when_frequency_also_ties(self, monkeypatch):
+        # Chastota HAM yordam bermaydigan holat (haqiqiy IShowSpeed misolida
+        # aynan shu bo'lgan): agar so'z HAR bir nomzodda ``MAX_TERM_REPEAT``
+        # (3) marta yoki undan ko'p uchrasa, hamma nomzod baribir bab-baravar
+        # eng yuqori (kesilgan) ballga to'planadi — chastota bilan tuzatilgan
+        # tez filtr ham manbani "durrang" ichida qoldirib ketaveradi.
+        #
+        # Bunday holatda YAGONA farq — so'zlar bitta joyga TO'PLANGANMI
+        # (haqiqiy manbada) yoki butun video bo'ylab SOCHILGANMI (durrangda),
+        # buni esa faqat sirg'aluvchi oyna bilan BATAFSIL tekshirib bilish
+        # mumkin. Tez filtr bunda muvaffaqiyatsiz bo'lgach, modul HAMMA
+        # nomzodni (filtrsiz) qayta tekshirishi kerak.
+        monkeypatch.setattr(find_source, "MAX_CANDIDATE_VIDEOS", 3)
+
+        for i in range(find_source.MAX_CANDIDATE_VIDEOS + 3):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [
+                # Har bir so'z 3 martadan (chastota chegarasiga yetadi), lekin
+                # BUTUN VIDEO bo'ylab SOCHILGAN — hech qachon bir oynada
+                # birga uchramaydi.
+                (100, "sharpie"), (100 + 300, "autograph"), (100 + 600, "helicopter"),
+                (100 + 900, "sharpie"), (100 + 1200, "autograph"), (100 + 1500, "helicopter"),
+                (100 + 1800, "sharpie"), (100 + 2100, "autograph"), (100 + 2400, "helicopter"),
+            ])
+        self._seed_stream("true_source", "Manba", [
+            # Xuddi shu chastota (3 martadan), lekin BITTA sahnada TO'PLANGAN.
+            (600, "sharpie autograph helicopter"),
+            (610, "sharpie autograph helicopter"),
+            (620, "sharpie autograph helicopter"),
+        ])
+        # Bog'liq bo'lmagan videolar — busiz klipning so'zlari HAMMA
+        # indekslangan videoda (7/7) uchraydi va IDF deyarli nolga tushib,
+        # eng yaxshi natija ham MIN_SCORE ostida qolib ketardi.
+        for i in range(10):
+            self._seed_stream(f"unrelated{i}", f"Unrelated {i}", [(10, "banana lemon quiz walrus")])
+        self._clip(monkeypatch, "sharpie autograph helicopter sharpie autograph helicopter "
+                                 "sharpie autograph helicopter")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        assert res["match"]["video_id"] == "true_source"
+
     def test_one_near_duplicate_rival_does_not_hide_a_real_match(self, monkeypatch):
         # Nega margin 2-o'ringa emas, MEDIANAGA nisbatan o'lchanadi: bitta
         # yaqin raqib ("Day 18 of 35" kabi qo'shni stream) 2-o'rinni egallab,
