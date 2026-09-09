@@ -223,18 +223,44 @@ def _score_windows(
     # suhbat boshlanadi. Oyna ballini nisbat bo'yicha orqaga surishdan
     # aniqroq: ball butun oyna bo'yicha o'rtachalashadi, bu esa konkret
     # segmentni ko'rsatadi.
+    #
+    # Lekin FAQAT "birinchi uchragan joy"ga qarash yetarli emas: uzoq
+    # (soatlab davom etuvchi) streamda ``SCENE_LOOKBACK_SECONDS`` (120s)
+    # ichida klipning UMUMIY (kam xarakterli) so'zlaridan biri sahnaga
+    # umuman aloqasi bo'lmagan holda tasodifan uchrab qolishi mumkin — va
+    # o'sha yolg'iz uchrash havolani haqiqiy sahnadan ancha oldinga
+    # "sirg'anib" yuboradi (2026-09-09, IShowSpeed "Ronaldo kit" klipida
+    # kuzatilgan: haqiqiy sahna 3399.8s da boshlangan — "why this girl got
+    # a messy shirt put on a Ronaldo kit" — lekin oynadan 118s oldinroqda,
+    # 3280.6s atrofida, "take a picture" haqidagi BUTUNLAY boshqa suhbatda
+    # "take" so'zi tasodifan uchrab, havola o'sha yerga ochilgan edi).
+    #
+    # Shuning uchun mos kelgan segmentlar orasidagi BO'SHLIQQA qaraymiz:
+    # ular bir-biridan yarim oynadan (``window / 2``) uzoqroqda bo'lsa,
+    # bu ikkita ALOHIDA voqea (avvalgisi tasodifiy, keyingisi haqiqiy
+    # sahna) deb hisoblanadi va sanoq qaytadan boshlanadi — natijada eng
+    # yuqori ballli oynaga ULANGAN (uzilishsiz) so'nggi to'plam boshlanishi
+    # qaytariladi, undan OLDINGI izolyatsiyalangan tasodifiy uchrashuv emas.
+    # Yagona (uzilishsiz) uchrashuvlar to'plamida esa xatti-harakat
+    # o'zgarmaydi — birinchi uchragan joy baribir tanlanadi (pastdagi
+    # testlarga qarang).
     shared_terms = set(best_shared)
-    scene_start = best_start
     earliest = best_start - SCENE_LOOKBACK_SECONDS
+    cluster_start = best_start
+    prev_match: float | None = None
     for seg_start, words in prepared:
         if seg_start < earliest:
             continue
         if seg_start >= best_start + window:
             break
-        if shared_terms.intersection(words):
-            scene_start = seg_start
+        if not shared_terms.intersection(words):
+            continue
+        if prev_match is None or seg_start - prev_match > window / 2:
+            cluster_start = seg_start
+        prev_match = seg_start
+        if seg_start >= best_start:
             break
-    return best_score, scene_start, best_shared
+    return best_score, cluster_start, best_shared
 
 
 def _best_match(
