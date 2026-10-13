@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections import Counter
 from contextlib import contextmanager
 
 import paths
+
+from . import text
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS transcript_segments (
@@ -31,6 +34,25 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
     PRIMARY KEY (video_id, seg_index)
 );
 CREATE INDEX IF NOT EXISTS idx_segments_channel ON transcript_segments(channel_id);
+
+-- Teskari indeks: "shu so'z qaysi videolarda uchraydi". ``find_source``
+-- klipning har bir so'zi uchun shu savolni beradi va javob ikki ish
+-- qiladi — nomzod videolarni tanlaydi va IDF (hujjat chastotasi) beradi.
+--
+-- Nega alohida jadval: avval bu ``transcript_segments`` ustidan
+-- ``LIKE '%so'z%'`` bilan qilinardi, ya'ni HAR BIR so'z uchun butun
+-- jadvalni to'liq skanerlash. 3.9 million qatorda bitta so'rov ~1 soniya,
+-- klipda ~40 ta so'z, ikki til — bitta so'rov 75 soniyaga cho'zilardi va
+-- indeks o'sgani sari yomonlashardi. Bu yerda esa PRIMARY KEY indeksidan
+-- foydalaniladi.
+CREATE TABLE IF NOT EXISTS video_terms (
+    term       TEXT NOT NULL,
+    video_id   TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (term, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_video_terms_video ON video_terms(video_id);
 
 CREATE TABLE IF NOT EXISTS indexed_videos (
     video_id       TEXT PRIMARY KEY,
@@ -59,6 +81,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(transcript_segments)")}
     if "published_at" not in columns:
         conn.execute("ALTER TABLE transcript_segments ADD COLUMN published_at TEXT")
+
+    # ``count`` (2026-09-04) — nomzod tanlashda so'zning shunchaki "bor/yo'q"
+    # ligi o'rniga necha marta uchraganini ishlatish uchun (pastdagi
+    # find_videos_with_term_counts'ga qarang). Eski qatorlarda DEFAULT 1
+    # bilan to'ldiriladi — bu haqiqiy chastota emas, "--rebuild-term-index"
+    # bajarilgunicha eski (bor/yo'q) xatti-harakatga teng bo'lib qoladi.
+    term_columns = {row["name"] for row in conn.execute("PRAGMA table_info(video_terms)")}
+    if "count" not in term_columns:
+        conn.execute("ALTER TABLE video_terms ADD COLUMN count INTEGER NOT NULL DEFAULT 1")
 
 
 @contextmanager
@@ -120,6 +151,8 @@ def save_video_segments(
     ``find_matching_video_ids``dagi sana oralig'i filtri uchun."""
     with _connect() as conn:
         conn.execute("DELETE FROM transcript_segments WHERE video_id = ?", (video_id,))
+        conn.execute("DELETE FROM video_terms WHERE video_id = ?", (video_id,))
+        _save_terms(conn, video_id, channel_id, segments)
         conn.executemany(
             "INSERT INTO transcript_segments "
             "(video_id, channel_id, channel_name, video_title, published_at, seg_index, text, start_time, end_time) "
@@ -135,6 +168,53 @@ def save_video_segments(
             "VALUES (?, ?, ?, ?)",
             (video_id, channel_id, 1 if segments else 0, time.time()),
         )
+
+
+def _save_terms(conn, video_id: str, channel_id: str, segments: list[dict]) -> None:
+    """Videodagi so'zlarning takrorlanish sonini teskari indeksga yozadi.
+
+    Shunchaki "bor/yo'q" emas, aynan SON kerak: ``find_source``dagi nomzod
+    tanlash shu songa qarab ballaydi (bir marta o'tgan so'z bilan o'nlab
+    marta takrorlangan so'zni farqlash uchun — soatlab davom etgan uzun
+    streamda deyarli har qanday so'z KAMIDA bir marta uchraydi, shuning
+    uchun oddiy "bor/yo'q" nomzodlarni bir-biridan ajrata olmay qoladi)."""
+    counts: Counter = Counter()
+    for seg in segments:
+        counts.update(text.terms(seg["text"]))
+    conn.executemany(
+        "INSERT OR REPLACE INTO video_terms (term, video_id, channel_id, count) VALUES (?, ?, ?, ?)",
+        [(term, video_id, channel_id, count) for term, count in counts.items()],
+    )
+
+
+def rebuild_term_index() -> int:
+    """Teskari indeksni mavjud segmentlardan qayta quradi.
+
+    Faqat MIGRATSIYA uchun: ``video_terms`` jadvali ``save_video_segments``
+    tomonidan o'z-o'zidan yangilanadi, lekin u qo'shilishidan OLDIN
+    indekslangan videolarda bo'sh qoladi. Videolar bo'yicha bo'lib
+    bajariladi — butun jadvalni xotiraga olmaydi.
+
+    Qaytaradi: qayta qurilgan videolar soni."""
+    with _connect() as conn:
+        video_ids = [
+            row["video_id"]
+            for row in conn.execute("SELECT DISTINCT video_id FROM transcript_segments")
+        ]
+        for video_id in video_ids:
+            rows = conn.execute(
+                "SELECT channel_id, text FROM transcript_segments WHERE video_id = ?",
+                (video_id,),
+            ).fetchall()
+            if not rows:
+                continue
+            conn.execute("DELETE FROM video_terms WHERE video_id = ?", (video_id,))
+            _save_terms(
+                conn, video_id, rows[0]["channel_id"],
+                [{"text": row["text"]} for row in rows],
+            )
+            conn.commit()
+        return len(video_ids)
 
 
 def _escape_like(query: str) -> str:
@@ -193,7 +273,9 @@ def find_matching_video_ids(
         return [row["video_id"] for row in rows]
 
 
-def find_videos_with_term(term: str, channel_id: str | None = None, limit: int = 200) -> list[str]:
+def find_videos_with_term(
+    term: str, channel_id: str | None = None, limit: int | None = None,
+) -> list[str]:
     """``term`` uchraydigan videolarning ID'lari — ``find_source.py``dagi
     nomzod tanlash uchun.
 
@@ -203,22 +285,95 @@ def find_videos_with_term(term: str, channel_id: str | None = None, limit: int =
     keyin ``find_source``da segment darajasida hisoblanadi.
 
     Qaytgan ro'yxat uzunligi shu so'zning kanal bo'yicha "hujjat chastotasi"
-    sifatida ham ishlatiladi (kam videoda uchragan so'z = xarakterliroq)."""
-    needle = _escape_like(term)
+    sifatida ham ishlatiladi (kam videoda uchragan so'z = xarakterliroq).
+
+    ``video_terms`` teskari indeksidan o'qiydi — ya'ni moslik BUTUN SO'Z
+    bo'yicha, avvalgi ``LIKE '%so'z%'`` kabi so'z ichidagi tasodifiy
+    ustma-tushlik bo'yicha emas (bu chastotani ham aniqroq qiladi).
+    Teskari indeks hali qurilmagan eski bazalarda avtomatik ravishda eski
+    usulga qaytiladi (``rebuild_term_index``ga qarang).
+
+    ``limit`` STANDART HOLATDA YO'Q (SQLite'da manfiy ``LIMIT`` = cheksiz):
+    ro'yxat uzunligi hujjat chastotasi sifatida ishlatilgani uchun uni
+    kesish IDF'ni buzadi — masalan 1000 videoda uchraydigan ommaviy so'z
+    200da kesilsa, u "nodir" bo'lib ko'rinib, ballni noto'g'ri shishirardi."""
+    limit = -1 if limit is None else limit
     with _connect() as conn:
+        if not conn.execute("SELECT 1 FROM video_terms LIMIT 1").fetchone():
+            return _find_videos_with_term_scan(conn, term, channel_id, limit)
         if channel_id:
             rows = conn.execute(
-                "SELECT DISTINCT video_id FROM transcript_segments "
-                "WHERE channel_id = ? AND text LIKE ? ESCAPE '\\' LIMIT ?",
-                (channel_id, needle, limit),
+                "SELECT video_id FROM video_terms WHERE term = ? AND channel_id = ? LIMIT ?",
+                (term, channel_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT DISTINCT video_id FROM transcript_segments "
-                "WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
-                (needle, limit),
+                "SELECT video_id FROM video_terms WHERE term = ? LIMIT ?",
+                (term, limit),
             ).fetchall()
         return [row["video_id"] for row in rows]
+
+
+def _find_videos_with_term_scan(conn, term: str, channel_id: str | None, limit: int) -> list[str]:
+    """Teskari indekssiz eski yo'l — butun jadvalni skanerlaydi (sekin)."""
+    needle = _escape_like(term)
+    if channel_id:
+        rows = conn.execute(
+            "SELECT DISTINCT video_id FROM transcript_segments "
+            "WHERE channel_id = ? AND text LIKE ? ESCAPE '\\' LIMIT ?",
+            (channel_id, needle, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT video_id FROM transcript_segments "
+            "WHERE text LIKE ? ESCAPE '\\' LIMIT ?",
+            (needle, limit),
+        ).fetchall()
+    return [row["video_id"] for row in rows]
+
+
+def find_videos_with_term_counts(
+    term: str, channel_id: str | None = None,
+) -> dict[str, int]:
+    """``find_videos_with_term`` bilan bir xil, lekin har bir video uchun
+    so'z NECHA MARTA uchraganini ham qaytaradi (``{video_id: count}``).
+
+    ``find_source.py``dagi nomzod tanlash uchun: so'zning shunchaki
+    "bor/yo'q"ligi soatlab davom etgan streamda deyarli hech narsani
+    ajratmaydi (deyarli har qanday so'z KAMIDA bir marta albatta uchraydi)
+    — chastota esa haqiqiy moslikni tasodifiy ustma-tushlikdan ajratadi.
+
+    Teskari indeks qurilmagan eski bazada ``_find_videos_with_term_scan``ga
+    qaytadi va o'sha video ichida so'z UCHRAGAN SEGMENTLAR sonini chastota
+    o'rnida ishlatadi (aniq so'z chastotasi emas, lekin oqilona taxmin —
+    bu yo'l ``--rebuild-term-index`` bajarilgunicha vaqtinchalik)."""
+    with _connect() as conn:
+        if not conn.execute("SELECT 1 FROM video_terms LIMIT 1").fetchone():
+            needle = _escape_like(term)
+            if channel_id:
+                rows = conn.execute(
+                    "SELECT video_id, COUNT(*) c FROM transcript_segments "
+                    "WHERE channel_id = ? AND text LIKE ? ESCAPE '\\' GROUP BY video_id",
+                    (channel_id, needle),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT video_id, COUNT(*) c FROM transcript_segments "
+                    "WHERE text LIKE ? ESCAPE '\\' GROUP BY video_id",
+                    (needle,),
+                ).fetchall()
+            return {row["video_id"]: row["c"] for row in rows}
+        if channel_id:
+            rows = conn.execute(
+                "SELECT video_id, count FROM video_terms WHERE term = ? AND channel_id = ?",
+                (term, channel_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT video_id, count FROM video_terms WHERE term = ?",
+                (term,),
+            ).fetchall()
+        return {row["video_id"]: row["count"] for row in rows}
 
 
 def count_indexed_videos(channel_id: str | None = None) -> int:
@@ -232,6 +387,32 @@ def count_indexed_videos(channel_id: str | None = None) -> int:
         else:
             row = conn.execute("SELECT COUNT(DISTINCT video_id) c FROM transcript_segments").fetchone()
         return int(row["c"]) if row else 0
+
+
+def list_indexed_channel_ids() -> list[str]:
+    """Segmentlari bor kanallarning ID'lari — kanal ko'rsatilmaganda ham
+    indeksni yangilab turish uchun (``search.catch_up``ga qarang)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT channel_id FROM transcript_segments"
+        ).fetchall()
+        return [row["channel_id"] for row in rows]
+
+
+def get_latest_indexed_date(channel_id: str) -> str | None:
+    """Kanalda indekslangan ENG YANGI videoning sanasi (``"YYYY-MM-DD"``).
+
+    Indeksni "shu sanadan keyingi videolar"ni olib yangilash uchun ishlatiladi.
+    ``published_at`` yozilmagan eski qatorlar hisobga olinmaydi (``MAX``
+    ``NULL``larni o'tkazib yuboradi) — bu xavfsiz tomonga xato: eng yomoni
+    biroz ko'proq video qayta ko'rib chiqiladi, lekin ular ``is_video_indexed``
+    tekshiruvida o'tkazib yuboriladi."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(published_at) AS latest FROM transcript_segments WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        return row["latest"] if row and row["latest"] else None
 
 
 def get_video_segments(video_id: str) -> list[dict]:

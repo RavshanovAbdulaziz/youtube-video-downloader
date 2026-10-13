@@ -94,6 +94,39 @@ class TestFindSource:
         assert res["match"]["video_title"] == "45 million in Thailand"
         assert res["match"]["published_at"] == "2025-10-21"
 
+    def test_reports_scene_start_not_middle_of_the_window(self, monkeypatch):
+        # Klipdagi suhbat oynadan (60s) uzun bo'lsa, eng ko'p ball to'plagan
+        # oyna sahna O'RTASIGA tushadi va havola sahna boshlanganidan keyin
+        # ochilardi. Mos kelgan so'zlar birinchi uchragan joy ko'rsatilishi
+        # kerak (o'lchangan holat: sahna 2:30:10, havola 2:30:38 edi).
+        self._seed_stream("stream", "Stream", [
+            (500, "unrelated chatter about the weather"),
+            (900, "officer says you have a warrant"),      # <- sahna boshi
+            (930, "unpaid speeding ticket and the court"),
+            (960, "warrant court ticket speeding unpaid"),  # <- eng zich joy
+            (990, "warrant court ticket speeding unpaid"),
+        ])
+        self._clip(monkeypatch, "warrant unpaid speeding ticket court")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        # 900 — "warrant" birinchi uchragan segment, 960 emas.
+        assert res["match"]["start_time"] == 900
+
+    def test_scene_start_does_not_run_away_into_unrelated_talk(self, monkeypatch):
+        # Orqaga qarash chegaralangan: undan oldingi mos kelmaydigan
+        # suhbatga o'tib ketmasligi kerak.
+        self._seed_stream("stream", "Stream", [
+            (100, "warrant"),                               # juda uzoqda, hisobga olinmasin
+            (900, "warrant court ticket speeding unpaid"),
+        ])
+        self._clip(monkeypatch, "warrant unpaid speeding ticket court")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["match"]["start_time"] >= 900 - find_source.SCENE_LOOKBACK_SECONDS
+
     def test_reports_timestamp_of_the_best_window(self, monkeypatch):
         self._seed_stream("stream_right", "Stream", [
             (100, "totally unrelated chatter about food"),
@@ -172,6 +205,81 @@ class TestFindSource:
         assert res["found"] is False
         assert res["match"] is None
 
+    def test_candidate_frequency_beats_a_tied_presence_only_crowd(self, monkeypatch):
+        # ASOSIY REGRESSIYA TESTI (2026-09-04): agar KO'P video klipning
+        # so'zlarini KAMIDA bir marta o'z ichiga olsa, ular eski "bor/yo'q"
+        # (Boolean) nomzod tanlashda BAB-BARAVAR eng yuqori ballga to'planardi
+        # va MAX_CANDIDATE_VIDEOS chegarasi haqiqiy manbani ularning ichida
+        # tasodifan (indeks tartibiga qarab) kesib tashlardi. Haqiqiy misolda
+        # (IShowSpeed klipi) 1174 videodan 1061 tasi shu tarzda tenglashib,
+        # to'g'ri video 12talik chegaradan 317-o'rinda qolib ketgan edi.
+        #
+        # Endi so'z NECHA MARTA uchraganini hisobga olamiz — klipda ikki marta
+        # aytilgan so'zlar manba videoda ham ikki marta, "durrang"da esa bir
+        # marta uchraydi, shuning uchun manba endi tepaga chiqadi va kesilib
+        # qolmaydi.
+        monkeypatch.setattr(find_source, "MAX_CANDIDATE_VIDEOS", 3)
+
+        noise_count = find_source.MAX_CANDIDATE_VIDEOS + 3
+        for i in range(noise_count):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [
+                (10, "sharpie autograph helicopter"),  # har biri BITTA marta
+            ])
+        self._seed_stream("true_source", "Manba", [
+            (600, "sharpie autograph helicopter"),
+            (610, "sharpie autograph helicopter"),  # xuddi klipdagidek IKKI marta
+        ])
+        for i in range(8):
+            self._seed_stream(f"unrelated{i}", f"Unrelated {i}", [(10, "banana lemon quiz")])
+        self._clip(monkeypatch, "sharpie autograph helicopter sharpie autograph helicopter")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        assert res["match"]["video_id"] == "true_source"
+
+    def test_falls_back_to_exhaustive_check_when_frequency_also_ties(self, monkeypatch):
+        # Chastota HAM yordam bermaydigan holat (haqiqiy IShowSpeed misolida
+        # aynan shu bo'lgan): agar so'z HAR bir nomzodda ``MAX_TERM_REPEAT``
+        # (3) marta yoki undan ko'p uchrasa, hamma nomzod baribir bab-baravar
+        # eng yuqori (kesilgan) ballga to'planadi — chastota bilan tuzatilgan
+        # tez filtr ham manbani "durrang" ichida qoldirib ketaveradi.
+        #
+        # Bunday holatda YAGONA farq — so'zlar bitta joyga TO'PLANGANMI
+        # (haqiqiy manbada) yoki butun video bo'ylab SOCHILGANMI (durrangda),
+        # buni esa faqat sirg'aluvchi oyna bilan BATAFSIL tekshirib bilish
+        # mumkin. Tez filtr bunda muvaffaqiyatsiz bo'lgach, modul HAMMA
+        # nomzodni (filtrsiz) qayta tekshirishi kerak.
+        monkeypatch.setattr(find_source, "MAX_CANDIDATE_VIDEOS", 3)
+
+        for i in range(find_source.MAX_CANDIDATE_VIDEOS + 3):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [
+                # Har bir so'z 3 martadan (chastota chegarasiga yetadi), lekin
+                # BUTUN VIDEO bo'ylab SOCHILGAN — hech qachon bir oynada
+                # birga uchramaydi.
+                (100, "sharpie"), (100 + 300, "autograph"), (100 + 600, "helicopter"),
+                (100 + 900, "sharpie"), (100 + 1200, "autograph"), (100 + 1500, "helicopter"),
+                (100 + 1800, "sharpie"), (100 + 2100, "autograph"), (100 + 2400, "helicopter"),
+            ])
+        self._seed_stream("true_source", "Manba", [
+            # Xuddi shu chastota (3 martadan), lekin BITTA sahnada TO'PLANGAN.
+            (600, "sharpie autograph helicopter"),
+            (610, "sharpie autograph helicopter"),
+            (620, "sharpie autograph helicopter"),
+        ])
+        # Bog'liq bo'lmagan videolar — busiz klipning so'zlari HAMMA
+        # indekslangan videoda (7/7) uchraydi va IDF deyarli nolga tushib,
+        # eng yaxshi natija ham MIN_SCORE ostida qolib ketardi.
+        for i in range(10):
+            self._seed_stream(f"unrelated{i}", f"Unrelated {i}", [(10, "banana lemon quiz walrus")])
+        self._clip(monkeypatch, "sharpie autograph helicopter sharpie autograph helicopter "
+                                 "sharpie autograph helicopter")
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["found"] is True
+        assert res["match"]["video_id"] == "true_source"
+
     def test_one_near_duplicate_rival_does_not_hide_a_real_match(self, monkeypatch):
         # Nega margin 2-o'ringa emas, MEDIANAGA nisbatan o'lchanadi: bitta
         # yaqin raqib ("Day 18 of 35" kabi qo'shni stream) 2-o'rinni egallab,
@@ -226,6 +334,31 @@ class TestFindSource:
         assert res["found"] is True
         assert res["clip_language"] == "uz"
         assert res["match"]["video_id"] == "uz_stream"
+
+    def test_stops_after_a_confident_match_instead_of_fetching_every_language(self, monkeypatch):
+        # Har bir til uchun klip transkriptini olish ~10 soniya turadi.
+        # Birinchi til ishonchli javob bergach, qolganini so'rash shart emas.
+        for i in range(8):
+            self._seed_stream(f"noise{i}", f"Noise {i}", [(10, f"unrelated topic {i}")])
+        self._seed_stream("target", "Target", [
+            (600, "sharpie autograph helicopter trombone kayak walrus"),
+            (620, "sharpie autograph helicopter trombone kayak walrus"),
+        ])
+        asked = []
+
+        def fake_fetch(video_id, languages=None):
+            lang = (languages or ["en"])[0]
+            asked.append(lang)
+            return [{"text": "sharpie autograph helicopter trombone kayak walrus "
+                             "sharpie autograph helicopter trombone kayak walrus",
+                     "start": 0.0, "duration": 5.0}]
+
+        monkeypatch.setattr(fetch, "fetch_transcript", fake_fetch)
+
+        res = find_source.find_source("B4uytxWGWEk", channel_id="UCWsDFcIhY2DBi3GB5uykGXA")
+
+        assert res["confident"] is True
+        assert asked == ["en"]
 
     def test_raises_blocked_when_clip_transcript_is_blocked_in_all_languages(self, monkeypatch):
         def fake_fetch(video_id, languages=None):

@@ -26,6 +26,11 @@ DEFAULT_SEARCH_MAX_VIDEOS = 15  # global rejimda tekshiriladigan nomzod video so
 # ta moslik faqat oxirgi ~3 haftani qamrab oldi). Katta bo'lsa ham, videolar
 # bir marta indexlangach qayta olinmaydi — keyingi qidiruvlar tezkor bo'ladi.
 DEFAULT_DATE_RANGE_MAX_VIDEOS = 500
+# Avtomatik yangilashda (``catch_up``) bitta so'rovda indexlanadigan eng
+# ko'p video. Kundalik efir qiladigan kanalda ham bir necha kunlik tanaffus
+# shu chegaraga sig'adi; chegara so'rov juda uzoq cho'zilib ketmasligi
+# uchun kerak (bitta video ~6 soniya).
+CATCH_UP_MAX_VIDEOS = 15
 
 
 def search(
@@ -137,7 +142,24 @@ def index_channel(
         info["uploads_playlist_id"], max_results=max_videos,
         published_after=published_after, published_before=published_before,
     )
-    any_blocked = False
+    _, any_blocked = _index_videos(videos, channel_id, info["title"], force=force)
+
+    # Bloklangan holatda kanalni ham "to'liq indexlangan" deb belgilamaymiz
+    # — aks holda keyingi qidiruv `is_channel_indexed`ga tayanib butunlay
+    # qayta urinishni o'tkazib yuborardi, garchi hech narsa saqlanmagan bo'lsa ham.
+    if not date_ranged and not any_blocked:
+        store.mark_channel_indexed(channel_id, len(videos))
+    return {**info, "blocked": any_blocked}
+
+
+def _index_videos(
+    videos: list[dict], channel_id: str, channel_title: str, force: bool = False,
+) -> tuple[int, bool]:
+    """``videos``dagi har birini (hali indexlanmagan bo'lsa) indexlaydi.
+
+    Qaytaradi: ``(nechtasi indexlandi, bloklanish bo'ldimi)``."""
+    indexed = 0
+    blocked = False
     for video in videos:
         video_id = video["video_id"]
         if not force and store.is_video_indexed(video_id):
@@ -149,19 +171,56 @@ def index_channel(
             # bermayapti (masalan IP bloklangan). "Tekshirilgan" deb
             # belgilamaymiz, aks holda blok tugagandan keyin ham bu video
             # abadiy "subtitri yo'q" bo'lib qolardi.
-            any_blocked = True
+            blocked = True
             continue
         segments = _normalize_segments(raw) if raw else []
         store.save_video_segments(
-            video_id, channel_id, info["title"], video["title"], segments, video.get("published_at"),
+            video_id, channel_id, channel_title, video["title"],
+            segments, video.get("published_at"),
         )
+        indexed += 1
+    return indexed, blocked
 
-    # Bloklangan holatda kanalni ham "to'liq indexlangan" deb belgilamaymiz
-    # — aks holda keyingi qidiruv `is_channel_indexed`ga tayanib butunlay
-    # qayta urinishni o'tkazib yuborardi, garchi hech narsa saqlanmagan bo'lsa ham.
-    if not date_ranged and not any_blocked:
-        store.mark_channel_indexed(channel_id, len(videos))
-    return {**info, "blocked": any_blocked}
+
+def catch_up(channel_ref: str | None = None, max_videos: int = CATCH_UP_MAX_VIDEOS) -> dict:
+    """Indeksni oxirgi indexlangan videodan KEYIN chiqqanlar bilan yangilaydi.
+
+    Kundalik ishlatishda asosiy muammo shu edi: kanal bir marta indexlangach,
+    ertasiga chiqqan streamlar indeksga TUSHMAYDI — ya'ni yangi streamdan
+    olingan klip hech qachon topilmaydi. Bu funksiya har qidiruvdan oldin
+    avtomatik chaqiriladi va odatda bir necha video bilan cheklanadi
+    (kunlik efir qiladigan kanalda ham), shuning uchun tez ishlaydi.
+
+    ``channel_ref`` berilmasa, ALLAQACHON indexlangan barcha kanallar
+    yangilanadi. Umuman indexlanmagan kanal bu yerda indexlanmaydi — u
+    "yangilash" emas, to'liq indexlash ishi (``index_channel``ga qarang).
+
+    Qaytaradi: ``{"indexed", "pending", "blocked"}`` — ``pending`` shu
+    chaqiruvda ``max_videos`` chegarasi sabab qolib ketgan videolar soni
+    (chaqiruvchi buni foydalanuvchiga ko'rsatishi mumkin)."""
+    if channel_ref:
+        channel_ids = [fetch.resolve_channel(channel_ref)["channel_id"]]
+    else:
+        channel_ids = store.list_indexed_channel_ids()
+
+    indexed = pending = 0
+    blocked = False
+    for channel_id in channel_ids:
+        latest = store.get_latest_indexed_date(channel_id)
+        if latest is None:
+            continue
+        info = fetch.resolve_channel(channel_id)
+        # ``latest``ning O'ZI ham qamrovga kiradi (o'sha kunning qolgan
+        # videolari uchun) — allaqachon indexlanganlari o'tkazib yuboriladi.
+        videos = fetch.list_channel_videos(
+            info["uploads_playlist_id"], published_after=latest,
+        )
+        todo = [v for v in videos if not store.is_video_indexed(v["video_id"])]
+        pending += max(0, len(todo) - max_videos)
+        count, was_blocked = _index_videos(todo[:max_videos], channel_id, info["title"])
+        indexed += count
+        blocked = blocked or was_blocked
+    return {"indexed": indexed, "pending": pending, "blocked": blocked}
 
 
 def _search_channel(

@@ -53,6 +53,19 @@ if not _file_logger.handlers:
 COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "") or paths.default_cookies_file() or ""
 POT_BASE_URL = os.environ.get("YTDLP_POT_BASE_URL", "")
 
+# Ba'zi internet-provayderlar TikTok'ning CDN manzillarini (odatiy YouTube'dan
+# farqli) DNS/IP darajasida bloklaydi yoki sekinlashtiradi — natijada so'rov
+# xato bermay, shunchaki "Connection timed out" bilan osilib qoladi (bu holat
+# ConnectionResetError'dan farqli: server rad etmayapti, paketlar umuman
+# yetib bormayapti). Bunga qarshi kod ichidan hech narsa qilib bo'lmaydi —
+# yagona yechim so'rovlarni proksi/VPN orqali yuborish. Sozlansa (HTTP(S)
+# yoki SOCKS5 manzil, masalan "socks5://127.0.0.1:1080"), BARCHA yt-dlp
+# so'rovlariga (nafaqat TikTok'ga) qo'llanadi.
+PROXY_URL = (
+    os.environ.get("YTDLP_PROXY", "")
+    or (paths.read_config().get("proxy") or "")
+).strip()
+
 # Cookie'larni fayldan emas, BRAUZERDAN to'g'ridan-to'g'ri o'qish. Bu yagona
 # haqiqiy "avtomatik" usul: har safar brauzerdagi joriy cookie olinadi, ya'ni
 # YouTube ularni yangilaganda ham hech narsa qo'lda eksport qilinmaydi.
@@ -258,6 +271,8 @@ def ydl_opts_ctx(extra: dict):
     node_exe = paths.bundled_node_exe()
     if node_exe:
         opts["js_runtimes"] = {"node": {"path": node_exe}}
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
     tmp_cookie = None
     if _browser_cookies_usable():
         # Brauzerdan o'qilganda vaqtinchalik nusxa kerak emas — yt-dlp
@@ -487,10 +502,97 @@ def parse_start_time(url: str) -> int | None:
     return None
 
 
+# TikTok ulashish tugmasi ko'pincha qisqartirilgan havola beradi
+# (vm.tiktok.com/vt.tiktok.com yoki tiktok.com/t/...). yt-dlp buni o'zi ham
+# HEAD so'rov bilan "to'liq" havolaga aylantiradi, lekin oddiy (brauzer
+# bo'lmagan) so'rovni TikTok tobora ko'proq holatda ConnectionReset bilan
+# rad etadi. Shu yerda avval haqiqiy brauzer TLS "barmoq izini" taqlid
+# qiluvchi (curl_cffi) so'rov bilan o'zimiz hal qilishga urinamiz — bu
+# muvaffaqiyatsiz bo'lsa (curl_cffi o'rnatilmagan yoki so'rov yiqilgan),
+# asl havola o'zgarishsiz qaytadi va yt-dlp o'zi qayta urinadi.
+_TIKTOK_SHORT_HOSTS = {"vm.tiktok.com", "vt.tiktok.com"}
+
+try:
+    from curl_cffi import requests as _curl_requests
+except ImportError:
+    _curl_requests = None
+
+
+# curl_cffi'ning standart (versiyasiz) "chrome" taqlid profili — ya'ni eng
+# yangi Chrome — internetda ENG KO'P ishlatiladigan bot/scraper "barmoq izi"
+# bo'lgani uchun TikTok'ning WAF'i aynan shuni alohida nishonga oladi: so'rov
+# HTTP 200 bilan qaytadi-yu, lekin haqiqiy sahifa o'rniga soxta "Site
+# Maintenance" xato sahifasini beradi (2026-09-21 sinovida o'lchandi — bir xil
+# so'rov "safari"/aniq eski "chrome136" profili bilan muvaffaqiyatli o'tdi).
+# yt-dlp'ning TikTok ekstraktori HAR DOIM ochiq (`impersonate=True`, ya'ni
+# "istalgan mos profil") so'raydi, va shu holatda curl_cffi o'zining ICHKI
+# ro'yxatidagi BIRINCHI mos profilni oladi — bu ro'yxat esa ataylab eng yangi
+# Chrome'ni birinchi qo'yadi. Shuning uchun ro'yxatni faqat QAYTA
+# TARTIBLAYMIZ (hech narsa olib tashlanmaydi — aniq "chrome" so'ralganda u
+# hali ham ishlatiladi): Safari profillari birinchi o'ringa chiqariladi.
+def _deprioritize_blocked_curl_cffi_default() -> None:
+    try:
+        from yt_dlp.networking._curlcffi import CurlCFFIRH
+    except ImportError:
+        return
+    targets = CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP
+    if not targets:
+        return
+    CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP = dict(
+        sorted(targets.items(), key=lambda kv: kv[0].client != "safari")
+    )
+
+
+if _curl_requests is not None:
+    _deprioritize_blocked_curl_cffi_default()
+
+
+def _resolve_short_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    host = (parsed.hostname or "").lower()
+    is_short_link = host in _TIKTOK_SHORT_HOSTS or (
+        host in ("tiktok.com", "www.tiktok.com") and parsed.path.startswith("/t/")
+    )
+    if not is_short_link or _curl_requests is None:
+        return url
+    try:
+        kwargs = {"impersonate": "safari", "allow_redirects": True, "timeout": 15}
+        if PROXY_URL:
+            kwargs["proxies"] = {"http": PROXY_URL, "https": PROXY_URL}
+        resp = _curl_requests.head(url, **kwargs)
+        return resp.url or url
+    except Exception as e:
+        _file_logger.warning("TikTok qisqa havolasini hal qilib bo'lmadi (%s), asl havola bilan davom etiladi: %s", url, e)
+        return url
+
+
 def get_info(url: str) -> dict:
-    with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    url = _resolve_short_url(url)
+
+    # Ma'lumot olish (yuklashdan farqli o'laroq) hech qanday job/progress
+    # holatiga bog'liq emas — shuning uchun `_with_retries` (jobs_lock/job_id
+    # talab qiladi) o'rniga shu yerda soddaroq qayta urinish qo'llanadi.
+    # TikTok kabi saytlarda vaqti-vaqti bilan uchraydigan vaqtinchalik
+    # "Connection timed out" xatosida foydalanuvchi darhol xato ko'rmasin
+    # deb — ko'pincha ikkinchi urinish o'tadi.
+    info = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            break
+        except Exception as e:
+            if attempt == DOWNLOAD_ATTEMPTS or not _is_transient(e):
+                raise
+            _file_logger.warning(
+                "get_info(%s): %d/%d-urinish vaqtinchalik xato bilan tugadi, qayta urinilmoqda: %s",
+                url, attempt, DOWNLOAD_ATTEMPTS, e,
+            )
+            time.sleep(RETRY_DELAY_SECONDS)
 
     formats = info.get("formats", [])
 
@@ -569,6 +671,7 @@ def get_info(url: str) -> dict:
         start_time = None
 
     return {
+        "url": url,
         "title": info.get("title"),
         "thumbnail": info.get("thumbnail"),
         "duration": duration,
@@ -778,6 +881,7 @@ def _download_clip(job_id: str, url: str, video_format_id: str | None, audio_for
     bajariladi — katta `-analyzeduration`/`-probesize` va `-seek_timestamp 1`
     kerak, chunki bu fayllar odatiy to'liq indeksga ega emas (faqat kerakli
     segment saqlangan)."""
+    url = _resolve_short_url(url)
     with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -941,9 +1045,11 @@ def start_subtitle_download(url: str, lang_code: str, auto: bool, title: str | N
 
     def run():
         try:
+            resolved_url = _resolve_short_url(url)
+
             def download_once():
                 with ydl_opts_ctx(base_opts) as opts, yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
+                    ydl.download([resolved_url])
 
             _with_retries(job_id, download_once)
             raw_path = _find_output_file(job_id)
@@ -1026,9 +1132,10 @@ def start_live_capture(url: str, video_format_id: str | None, audio_format_id: s
     def run():
         stderr_tail: list[str] = []
         try:
+            resolved_url = _resolve_short_url(url)
             with ydl_opts_ctx({"quiet": True, "no_warnings": True, "skip_download": True}) as opts:
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                    info = ydl.extract_info(resolved_url, download=False)
 
             if not info.get("is_live"):
                 raise RuntimeError("Bu video hozir jonli efirda emas — oddiy yuklab olishdan foydalaning")

@@ -364,7 +364,7 @@ audioToggle.addEventListener("change", updateVideoLangVisibility);
 fetchBtn.addEventListener("click", async () => {
   const url = urlInput.value.trim();
   if (!url) {
-    showError("Iltimos, YouTube havolasini kiriting.");
+    showError("Iltimos, YouTube yoki TikTok havolasini kiriting.");
     return;
   }
   clearError();
@@ -500,7 +500,7 @@ downloadVideoBtn.addEventListener("click", () => {
   if (!currentInfo) return;
   const wantAudio = audioToggle.checked;
   startDownload({
-    url: urlInput.value.trim(),
+    url: currentInfo.url || urlInput.value.trim(),
     audio_only: false,
     video_format_id: resolutionSelect.value,
     audio_format_id: wantAudio && currentInfo.audio_tracks.length ? videoLangSelect.value : null,
@@ -512,7 +512,7 @@ downloadVideoBtn.addEventListener("click", () => {
 downloadAudioBtn.addEventListener("click", () => {
   if (!currentInfo) return;
   startDownload({
-    url: urlInput.value.trim(),
+    url: currentInfo.url || urlInput.value.trim(),
     audio_only: true,
     video_format_id: null,
     audio_format_id: audioLangSelect.value,
@@ -536,7 +536,7 @@ separateBtn.addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        url: urlInput.value.trim(),
+        url: currentInfo.url || urlInput.value.trim(),
         audio_format_id: separateLangSelect.value,
         title: currentInfo.title,
         engine: separateEngineSelect.value,
@@ -618,7 +618,7 @@ downloadSubtitleBtn.addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        url: urlInput.value.trim(),
+        url: currentInfo.url || urlInput.value.trim(),
         lang_code: langCode,
         auto: autoFlag === "1",
         title: currentInfo.title,
@@ -808,7 +808,7 @@ liveStartBtn.addEventListener("click", () => {
   if (!currentInfo) return;
   const wantAudio = liveAudioToggle.checked;
   startLiveCapture({
-    url: urlInput.value.trim(),
+    url: currentInfo.url || urlInput.value.trim(),
     video_format_id: liveResolutionSelect.value,
     audio_format_id: wantAudio && currentInfo.audio_tracks.length ? liveLangSelect.value : null,
     audio_only: false,
@@ -823,7 +823,7 @@ liveAudioBtn.addEventListener("click", () => {
   // sifatida yuboriladi, backend undan faqat audioni ajratib oladi.
   const hasAudioTracks = currentInfo.audio_tracks.length > 0;
   startLiveCapture({
-    url: urlInput.value.trim(),
+    url: currentInfo.url || urlInput.value.trim(),
     video_format_id: hasAudioTracks ? null : liveResolutionSelect.value,
     audio_format_id: hasAudioTracks ? liveLangSelect.value : null,
     audio_only: true,
@@ -1062,6 +1062,19 @@ function showFindSourceError(msg) {
 // YouTube subtitrlaridan keladi, ya'ni ishonchsiz manba.
 function renderFindSourceResult(data) {
   findSourceResult.textContent = "";
+
+  // Har qidiruvdan oldin indeks avtomatik yangilanadi — nima qilinganini
+  // ko'rsatamiz, aks holda so'rov nega uzoqroq ketgani tushunarsiz bo'ladi.
+  const update = data.catch_up || {};
+  if (update.indexed > 0 || update.pending > 0) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    const parts = [];
+    if (update.indexed > 0) parts.push(`Indeksga ${update.indexed} ta yangi video qo'shildi.`);
+    if (update.pending > 0) parts.push(`Yana ${update.pending} tasi navbatda — tugatish uchun qayta bosing.`);
+    note.textContent = parts.join(" ");
+    findSourceResult.appendChild(note);
+  }
 
   if (!data.found) {
     const msg = document.createElement("p");

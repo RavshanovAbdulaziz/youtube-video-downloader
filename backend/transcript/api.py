@@ -72,9 +72,18 @@ def api_transcript_find_source(req: FindSourceRequest):
     streamdan olinganini, aniq vaqt belgisi bilan qaytaradi
     (``find_source.find_source``ga qarang).
 
-    Faqat allaqachon indekslangan videolar ichidan qidiradi — tarmoqqa
-    chiqish faqat klipning O'Z transkriptini olish uchun kerak, shuning
-    uchun javob tezkor."""
+    Qidirishdan oldin indeks AVTOMATIK yangilanadi (``search.catch_up``):
+    aks holda kecha chiqqan streamdan olingan klip hech qachon topilmasdi
+    va foydalanuvchi kanalni qo'lda qayta indexlashi kerak bo'lardi.
+    Yangilash muvaffaqiyatsiz bo'lsa (API kaliti yo'q, YouTube bloklagan
+    va h.k.) qidiruv baribir mavjud indeks ustida davom etadi — yangilash
+    qulaylik, majburiy shart emas."""
+    catch_up: dict = {"indexed": 0, "pending": 0, "blocked": False, "error": None}
+    try:
+        catch_up.update(search_module.catch_up(req.channel_id))
+    except Exception as e:
+        catch_up["error"] = str(e)
+
     try:
         data = find_source_module.find_source(req.clip_url, channel_id=req.channel_id)
     except fetch.TranscriptFetchBlocked as e:
@@ -89,4 +98,4 @@ def api_transcript_find_source(req: FindSourceRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Manbani aniqlashda xatolik: {e}")
 
-    return data
+    return {**data, "catch_up": catch_up}

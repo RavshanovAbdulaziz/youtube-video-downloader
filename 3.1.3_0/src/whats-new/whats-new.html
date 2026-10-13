@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>What's New - Subtitle Downloader</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        width: 100%;
+        min-height: 100vh;
+        background: #f9fafb;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      body[data-theme='dark'] {
+        background: #111827;
+      }
+
+      #app {
+        min-height: 100vh;
+        width: 100%;
+      }
+    </style>
+    <script type="module" crossorigin src="/whats-new.js"></script>
+    <link rel="modulepreload" crossorigin href="/logger.js">
+    <link rel="modulepreload" crossorigin href="/vue-runtime.js">
+    <link rel="modulepreload" crossorigin href="/index.js">
+    <link rel="modulepreload" crossorigin href="/popup2.js">
+    <link rel="modulepreload" crossorigin href="/preload-helper.js">
+    <link rel="modulepreload" crossorigin href="/platforms.js">
+    <link rel="modulepreload" crossorigin href="/browser-detection.js">
+    <link rel="modulepreload" crossorigin href="/premium.js">
+    <link rel="modulepreload" crossorigin href="/plugin-vue_export-helper.js">
+    <link rel="stylesheet" crossorigin href="/popup2.css">
+    <link rel="stylesheet" crossorigin href="/whats-new.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
