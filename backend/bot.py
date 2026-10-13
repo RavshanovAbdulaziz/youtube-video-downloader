@@ -82,18 +82,21 @@ async def _release_job_slot() -> None:
 
 
 # yt-dlp'ning umumiy (generic) ekstraktori deyarli istalgan HTTP(S) URL'ni
-# so'rashga urinadi — domenni YouTube bilan cheklamasak, istalgan foydalanuvchi
-# botni SSRF-ga o'xshash vosita sifatida ishlatishi mumkin edi (masalan ichki
-# tarmoq/bulut metadata manzillariga serverdan so'rov yuborish).
+# so'rashga urinadi — domenni ma'lum saytlar bilan cheklamasak, istalgan
+# foydalanuvchi botni SSRF-ga o'xshash vosita sifatida ishlatishi mumkin edi
+# (masalan ichki tarmoq/bulut metadata manzillariga serverdan so'rov yuborish).
 _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+_TIKTOK_HOSTS = {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"}
 
 
-def _is_youtube_url(url: str) -> bool:
+def _is_supported_url(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
     except ValueError:
         return False
-    return host in _YOUTUBE_HOSTS or host.endswith(".youtube.com")
+    if host in _YOUTUBE_HOSTS or host.endswith(".youtube.com"):
+        return True
+    return host in _TIKTOK_HOSTS or host.endswith(".tiktok.com")
 
 
 def _is_allowed(user_id: int | None) -> bool:
@@ -174,12 +177,12 @@ async def on_help(message: Message) -> None:
 @router.message(F.text.contains("http"))
 async def on_url(message: Message) -> None:
     url = message.text.strip()
-    if not _is_youtube_url(url):
+    if not _is_supported_url(url):
         # yt-dlp'ning umumiy ekstraktori aks holda deyarli ISTALGAN HTTP(S)
         # manzilga (ichki tarmoq/bulut metadata xizmatlari ham) serverdan
-        # so'rov yuborishi mumkin edi — yuqoridagi _is_youtube_url izohiga
+        # so'rov yuborishi mumkin edi — yuqoridagi _is_supported_url izohiga
         # qarang.
-        await message.answer(texts.NOT_YOUTUBE_TEXT)
+        await message.answer(texts.NOT_SUPPORTED_URL_TEXT)
         return
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     status = await message.answer("⏳ Ma'lumot olinmoqda...")
@@ -191,7 +194,7 @@ async def on_url(message: Message) -> None:
         return
 
     token = store.create(
-        url=url,
+        url=info.get("url") or url,
         title=info.get("title"),
         duration=info.get("duration"),
         thumbnail=info.get("thumbnail"),

@@ -2,7 +2,7 @@ import html
 
 START_TEXT = (
     "👋 <b>Salom!</b>\n\n"
-    "YouTube havolasini shu yerga yuboring — men taklif qilaman:\n"
+    "YouTube yoki TikTok havolasini shu yerga yuboring — men taklif qilaman:\n"
     "🎬 Video (istalgan sifatda)\n"
     "🎵 Faqat audio (mp3)\n"
     "🎤 Ovozni ajratish (AI: nutq / fon)\n"
@@ -15,14 +15,14 @@ BUSY_ALERT = "⌛ Joriy vazifa hali tugamadi, biroz kuting."
 NO_AUDIO_ALERT = "Bu video uchun audio trek topilmadi."
 BACK_LABEL = "🔙 Orqaga"
 NOT_AUTHORIZED_TEXT = "🚫 Kechirasiz, bu bot hozircha faqat cheklangan foydalanuvchilar uchun."
-NOT_YOUTUBE_TEXT = "❌ Faqat YouTube havolalarini qabul qilaman."
+NOT_SUPPORTED_URL_TEXT = "❌ Faqat YouTube yoki TikTok havolalarini qabul qilaman."
 BUSY_SERVER_ALERT = "⌛ Server hozir band, biroz so'ng qayta urinib ko'ring."
 
 
 def help_text(max_telegram_mb: int) -> str:
     return (
         "ℹ️ <b>Qanday ishlatiladi</b>\n\n"
-        "1️⃣ YouTube havolasini yuboring\n"
+        "1️⃣ YouTube yoki TikTok havolasini yuboring\n"
         "2️⃣ Kerakli amalni tugmalar orqali tanlang\n"
         "3️⃣ Kutib turing — tayyor bo'lgach fayl avtomatik keladi\n\n"
         f"📦 Fayl hajmi chegarasi: {max_telegram_mb} MB"

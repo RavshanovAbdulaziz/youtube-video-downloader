@@ -12,7 +12,7 @@ from yt_dlp.utils import download_range_func
 
 import ai_setup
 import paths
-from downloader import DOWNLOADS_DIR, _is_transient, _sanitize_filename, _unique_path, ydl_opts_ctx
+from downloader import DOWNLOADS_DIR, _is_transient, _resolve_short_url, _sanitize_filename, _unique_path, ydl_opts_ctx
 
 SEPARATE_TMP_DIR = paths.SEPARATE_TMP_DIR
 
@@ -176,6 +176,7 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
         work_dir = os.path.join(SEPARATE_TMP_DIR, job_id)
         os.makedirs(work_dir, exist_ok=True)
         try:
+            resolved_url = _resolve_short_url(url)
             if not ai_setup.is_ai_installed():
                 # Bir martalik, birinchi ishlatishda: AI kutubxonalari (torch/
                 # demucs/audio-separator) fonda avtomatik o'rnatiladi. Foydalanuvchi
@@ -202,7 +203,7 @@ def start_separation(url: str, audio_format_id: str, title: str | None = None,
                 base_opts["download_ranges"] = download_range_func(
                     None, [(start_time or 0, end_time if end_time is not None else float("inf"))]
                 )
-            _download_source(job_id, url, base_opts, work_dir)
+            _download_source(job_id, resolved_url, base_opts, work_dir)
 
             source_file = next(
                 (os.path.join(work_dir, f) for f in os.listdir(work_dir) if f.startswith("source.")),

@@ -1,6 +1,10 @@
 fastapi
 uvicorn[standard]
-yt-dlp[default]
+# "curl-cffi" — TikTok ekstraktori sahifa so'rovlarini brauzer TLS
+# "barmoq izi"ni taqlid qilib (impersonate) yuboradi; aks holda TikTok bot
+# deb hisoblab ulanishni darhol uzadi (ConnectionResetError / "Connection
+# aborted"). YouTube uchun shart emas, lekin zararsiz.
+yt-dlp[default,curl-cffi]
 bgutil-ytdlp-pot-provider
 aiogram
 

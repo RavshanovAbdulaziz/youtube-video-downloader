@@ -8,7 +8,7 @@ import pytest
 import bot
 
 
-class TestIsYoutubeUrl:
+class TestIsSupportedUrl:
     @pytest.mark.parametrize("url", [
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "https://youtube.com/watch?v=abc",
@@ -17,14 +17,22 @@ class TestIsYoutubeUrl:
         "https://youtu.be/dQw4w9WgXcQ",
         "https://www.youtube.com/live/vf_EczgiP1s?si=ZWIdICGy6TUOayTT",
         "HTTPS://WWW.YOUTUBE.COM/watch?v=abc",  # bosh harflar
+        "https://www.tiktok.com/@user/video/1234567890",
+        "https://tiktok.com/@user/video/1234567890",
+        "https://m.tiktok.com/v/1234567890.html",
+        "https://vm.tiktok.com/ZSqWujsCY/",
+        "https://vt.tiktok.com/ZSqWujsCY/",
+        "HTTPS://WWW.TIKTOK.COM/@user/video/1234567890",  # bosh harflar
     ])
-    def test_accepts_youtube(self, url):
-        assert bot._is_youtube_url(url) is True
+    def test_accepts_supported(self, url):
+        assert bot._is_supported_url(url) is True
 
     @pytest.mark.parametrize("url", [
-        # Domen "youtube.com" bilan BOSHLANADI, lekin boshqa saytga tegishli.
+        # Domen "youtube.com"/"tiktok.com" bilan BOSHLANADI, lekin boshqa
+        # saytga tegishli.
         "https://youtube.com.evil.example/watch?v=abc",
         "https://www.youtube.com.attacker.net/",
+        "https://tiktok.com.evil.example/@user/video/123",
         # Yo'lida "youtube.com" bor, lekin host boshqa.
         "https://evil.example/youtube.com",
         # SSRF uchun klassik nishonlar.
@@ -36,13 +44,13 @@ class TestIsYoutubeUrl:
         "salom http dunyo",
         "",
     ])
-    def test_rejects_non_youtube(self, url):
-        assert bot._is_youtube_url(url) is False
+    def test_rejects_unsupported(self, url):
+        assert bot._is_supported_url(url) is False
 
     def test_rejects_malformed_url_without_raising(self):
         # urlparse ba'zi noto'g'ri IPv6 qavslarida ValueError ko'taradi —
         # bu handler ichida ushlanishi kerak, aks holda bot qulaydi.
-        assert bot._is_youtube_url("http://[::1") is False
+        assert bot._is_supported_url("http://[::1") is False
 
 
 class TestIsAllowed:
